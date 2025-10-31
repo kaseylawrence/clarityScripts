@@ -510,12 +510,14 @@ class ClarityProjectMonitor:
             print(f'This is the API PUT:\n{xml_string}')
             response = self.api.PUT(xml_string, project_info['uri'])
             print(response)
-            if response.status_code == 200:
+
+            # glsapiutil3.PUT() returns response body (bytes) on success, raises exception on failure
+            if response:
                 logger.info(f"Successfully renamed project: {old_name} -> {new_name}")
                 self.processed_projects.add(project_info['id'])
                 return True
             else:
-                print(f"API returned status code: {response.status_code}")
+                logger.error(f"API PUT returned empty response")
                 return False
                 
         except Exception as e:

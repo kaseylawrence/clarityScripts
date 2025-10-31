@@ -67,7 +67,9 @@ def institution_email_template(order_type,project_name,sample_number,project_ope
     body.append(f"Samples: {sample_number}")
     body.append(f"Date: {project_openDate}")
     body.append(f"User: {researcher_firstName} {researcher_lastName}")
-    
+    body = "\n".join(body)
+    return body
+
 
 def send_resercher_email (email_SUBJECT_line, email_body, researcher_email ) :
     msg = MIMEText (email_body)
@@ -89,19 +91,19 @@ def send_resercher_email (email_SUBJECT_line, email_body, researcher_email ) :
 def send_institution_email(email_SUBJECT_line, email_body,institution_email) :
     msg = MIMEText (email_body)
     email_from_address = 'noreply.clarity@illumina.com' # restricted to sending from this email.
-    
+
     msg['Subject'] = email_SUBJECT_line
     msg['From'] = email_from_address
     msg['To'] = institution_email
 
 
-    print( email_SUBJECT_line, email_body, researcher_email)
+    print( email_SUBJECT_line, email_body, institution_email)
     s = smtplib.SMTP()
     print(s)
     print(s.local_hostname)
     print( s.connect(host='localhost', port=25))
-    print(email_from_address, [researcher_email], msg.as_string())
-    print(s.sendmail(email_from_address, [researcher_email],msg.as_string() ))
+    print(email_from_address, [institution_email], msg.as_string())
+    print(s.sendmail(email_from_address, [institution_email],msg.as_string() ))
 
 class ClarityProjectMonitor:
     """Monitor Clarity LIMS for new projects and rename them."""
@@ -258,7 +260,35 @@ class ClarityProjectMonitor:
             logger.error(f"Error getting project details for {project_uri}: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return None
-    
+
+    def get_sample_count(self, project_limsid: str) -> int:
+        """
+        Get the count of samples in a project.
+
+        Args:
+            project_limsid: The LIMS ID of the project (e.g., 'PRJ123')
+
+        Returns:
+            The number of samples in the project, or 0 if an error occurs
+        """
+        try:
+            uri = f"{self.api.getBaseURI()}samples?projectlimsid={project_limsid}"
+            logger.debug(f"Getting sample count for project {project_limsid}")
+            response = self.api.GET(uri)
+            xml = ET.fromstring(response)
+
+            # Count sample elements
+            samples = xml.findall('.//sample', NSMAP)
+            sample_count = len(samples)
+
+            logger.debug(f"Project {project_limsid} has {sample_count} samples")
+            return sample_count
+
+        except Exception as e:
+            logger.error(f"Error getting sample count for project {project_limsid}: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return 0
+
     def is_project_processed(self, project_xml):
         """
         Check if project has already been auto-renamed.
@@ -472,18 +502,36 @@ class ClarityProjectMonitor:
                     projects_modified = True
 
                 #send the email
-                researcher_response = self.api.GET(project_info['researcher_uri'])
-                researcher_xml = ET.fromstring(researcher_response)
-                researcher_firstName = researcher_xml.find('.//first-name').text
-                researcher_lastName = researcher_xml.find('.//last-name').text
-                researcher_email = researcher_xml.find('.//email').text
-                institution_email = 'institutionEmailHere'
-                researcher_email_body = researcher_email_template (researcher_firstName, new_name)
-                instituion_email_body = institution_email_template(order_type,new_name,sample_number,project_openDate,researcher_firstName,researcher_lastName)
-                email_SUBJECT_line = 'New Project Submitted to LIMS'
+                try:
+                    researcher_response = self.api.GET(project_info['researcher_uri'])
+                    researcher_xml = ET.fromstring(researcher_response)
+                    researcher_firstName = researcher_xml.find('.//first-name').text
+                    researcher_lastName = researcher_xml.find('.//last-name').text
+                    researcher_email = researcher_xml.find('.//email').text
 
-                #Not Sending emails yet send_researcher_email( email_SUBJECT_line, researcher_email_body, researcher_email )
-                # send_institution_email(email_SUBJECT_line, instituion_email_body,institution_email)
+                    # Extract email data points
+                    order_type = project_info['udfs'].get('Order Type', 'N/A')
+                    sample_number = self.get_sample_count(project_info['id'])
+                    project_openDate = project_info['open_date']
+
+                    institution_email = 'institutionEmailHere'
+                    researcher_email_body = researcher_email_template(researcher_firstName, new_name)
+                    institution_email_body = institution_email_template(
+                        order_type,
+                        new_name,
+                        sample_number,
+                        project_openDate,
+                        researcher_firstName,
+                        researcher_lastName
+                    )
+                    email_SUBJECT_line = 'New Project Submitted to LIMS'
+
+                    #Not Sending emails yet send_resercher_email( email_SUBJECT_line, researcher_email_body, researcher_email )
+                    #send_institution_email(email_SUBJECT_line, institution_email_body, institution_email)
+
+                except Exception as e:
+                    logger.error(f"Error preparing email for project {project_info['name']}: {e}")
+                    logger.error(f"Traceback: {traceback.format_exc()}")
 
 
 

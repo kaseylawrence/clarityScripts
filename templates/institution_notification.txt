@@ -1,0 +1,6 @@
+{{ order_type }}
+
+Order: {{ project_name }}
+Samples: {{ sample_number }}
+Date: {{ project_openDate }}
+User: {{ researcher_firstName }} {{ researcher_lastName }}

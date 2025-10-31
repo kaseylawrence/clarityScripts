@@ -20,9 +20,13 @@ from xml.etree import ElementTree as ET
 # Import Clarity API utilities
 import glsapiutil3
 
-#email stuff
+# Email stuff
 import smtplib
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+# Template engine
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
 
@@ -45,6 +49,15 @@ NAMING_SCRIPT = '/opt/gls/clarity/customextensions/counterManager.py'  # Path to
 CHECK_INTERVAL = 60  # seconds between checks
 UDF_PROCESSED = 'Auto-Renamed'  # UDF to mark processed projects
 PROCESSED_PROJECTS_FILE = 'processed_projects.json'  # File to persist processed project IDs
+TEMPLATE_DIR = 'templates'  # Directory containing email templates
+
+# Initialize Jinja2 environment for email templates
+template_env = Environment(
+    loader=FileSystemLoader(TEMPLATE_DIR),
+    autoescape=select_autoescape(['html', 'xml']),
+    trim_blocks=True,
+    lstrip_blocks=True
+)
 
 # Clarity API namespaces
 NSMAP = {
@@ -53,57 +66,117 @@ NSMAP = {
     'ri': 'http://genologics.com/ri'
 }
 
-def researcher_email_template(researcher_firstName, project_name ):
-    body = []
-    body.append(f"Dear {researcher_firstName}")
-    body.append(f"Your project {project_name} submission has been received.")
-    body = "\n".join(body)
-    return body
+def render_email_template(template_name, **context):
+    """
+    Render an email template using Jinja2.
 
-def institution_email_template(order_type,project_name,sample_number,project_openDate,researcher_firstName,researcher_lastName) :
-    body = []
-    body.append(f"{order_type}")
-    body.append(f"Order: {project_name}")
-    body.append(f"Samples: {sample_number}")
-    body.append(f"Date: {project_openDate}")
-    body.append(f"User: {researcher_firstName} {researcher_lastName}")
-    body = "\n".join(body)
-    return body
+    Args:
+        template_name: Name of template file (e.g., 'researcher_notification')
+        **context: Variables to pass to the template
+
+    Returns:
+        Tuple of (text_body, html_body) or (text_body, None) if HTML not available
+    """
+    try:
+        # Render text version
+        text_template = template_env.get_template(f'{template_name}.txt')
+        text_body = text_template.render(**context)
+
+        # Try to render HTML version
+        html_body = None
+        try:
+            html_template = template_env.get_template(f'{template_name}.html')
+            html_body = html_template.render(**context)
+        except Exception:
+            logger.debug(f"No HTML template found for {template_name}, using text only")
+
+        return text_body, html_body
+
+    except Exception as e:
+        logger.error(f"Error rendering template {template_name}: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None, None
 
 
-def send_resercher_email (email_SUBJECT_line, email_body, researcher_email ) :
-    msg = MIMEText (email_body)
-    email_from_address = 'noreply.clarity@illumina.com' # restricted to sending from this email.
-    
-    msg['Subject'] = email_SUBJECT_line
-    msg['From'] = email_from_address
-    msg['To'] = researcher_email
+def send_researcher_email(email_SUBJECT_line, text_body, html_body, researcher_email):
+    """
+    Send email to researcher with optional HTML formatting.
 
+    Args:
+        email_SUBJECT_line: Email subject
+        text_body: Plain text version of email
+        html_body: HTML version of email (optional, can be None)
+        researcher_email: Recipient email address
+    """
+    email_from_address = 'noreply.clarity@illumina.com'
 
-    print( email_SUBJECT_line, email_body, researcher_email)
+    # Create multipart message if HTML is available
+    if html_body:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = email_SUBJECT_line
+        msg['From'] = email_from_address
+        msg['To'] = researcher_email
+
+        # Attach both plain text and HTML versions
+        # Email clients will prefer HTML if available
+        part1 = MIMEText(text_body, 'plain')
+        part2 = MIMEText(html_body, 'html')
+        msg.attach(part1)
+        msg.attach(part2)
+    else:
+        # Plain text only
+        msg = MIMEText(text_body)
+        msg['Subject'] = email_SUBJECT_line
+        msg['From'] = email_from_address
+        msg['To'] = researcher_email
+
+    print(email_SUBJECT_line, researcher_email)
     s = smtplib.SMTP()
     print(s)
     print(s.local_hostname)
-    print( s.connect(host='localhost', port=25))
-    print(email_from_address, [researcher_email], msg.as_string())
-    print(s.sendmail(email_from_address, [researcher_email],msg.as_string() ))
+    print(s.connect(host='localhost', port=25))
+    print(email_from_address, [researcher_email])
+    print(s.sendmail(email_from_address, [researcher_email], msg.as_string()))
 
-def send_institution_email(email_SUBJECT_line, email_body,institution_email) :
-    msg = MIMEText (email_body)
-    email_from_address = 'noreply.clarity@illumina.com' # restricted to sending from this email.
+def send_institution_email(email_SUBJECT_line, text_body, html_body, institution_email):
+    """
+    Send email to institution with optional HTML formatting.
 
-    msg['Subject'] = email_SUBJECT_line
-    msg['From'] = email_from_address
-    msg['To'] = institution_email
+    Args:
+        email_SUBJECT_line: Email subject
+        text_body: Plain text version of email
+        html_body: HTML version of email (optional, can be None)
+        institution_email: Recipient email address
+    """
+    email_from_address = 'noreply.clarity@illumina.com'
 
+    # Create multipart message if HTML is available
+    if html_body:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = email_SUBJECT_line
+        msg['From'] = email_from_address
+        msg['To'] = institution_email
 
-    print( email_SUBJECT_line, email_body, institution_email)
+        # Attach both plain text and HTML versions
+        # Email clients will prefer HTML if available
+        part1 = MIMEText(text_body, 'plain')
+        part2 = MIMEText(html_body, 'html')
+        msg.attach(part1)
+        msg.attach(part2)
+    else:
+        # Plain text only
+        msg = MIMEText(text_body)
+        msg['Subject'] = email_SUBJECT_line
+        msg['From'] = email_from_address
+        msg['To'] = institution_email
+
+    print(email_SUBJECT_line, institution_email)
     s = smtplib.SMTP()
     print(s)
     print(s.local_hostname)
-    print( s.connect(host='localhost', port=25))
-    print(email_from_address, [institution_email], msg.as_string())
-    print(s.sendmail(email_from_address, [institution_email],msg.as_string() ))
+    print(s.connect(host='localhost', port=25))
+    print(email_from_address, [institution_email])
+    print(s.sendmail(email_from_address, [institution_email], msg.as_string()))
 
 class ClarityProjectMonitor:
     """Monitor Clarity LIMS for new projects and rename them."""
@@ -515,19 +588,30 @@ class ClarityProjectMonitor:
                     project_openDate = project_info['open_date']
 
                     institution_email = 'institutionEmailHere'
-                    researcher_email_body = researcher_email_template(researcher_firstName, new_name)
-                    institution_email_body = institution_email_template(
-                        order_type,
-                        new_name,
-                        sample_number,
-                        project_openDate,
-                        researcher_firstName,
-                        researcher_lastName
+
+                    # Render researcher email from template
+                    researcher_text, researcher_html = render_email_template(
+                        'researcher_notification',
+                        researcher_firstName=researcher_firstName,
+                        project_name=new_name
                     )
+
+                    # Render institution email from template
+                    institution_text, institution_html = render_email_template(
+                        'institution_notification',
+                        order_type=order_type,
+                        project_name=new_name,
+                        sample_number=sample_number,
+                        project_openDate=project_openDate,
+                        researcher_firstName=researcher_firstName,
+                        researcher_lastName=researcher_lastName
+                    )
+
                     email_SUBJECT_line = 'New Project Submitted to LIMS'
 
-                    #Not Sending emails yet send_resercher_email( email_SUBJECT_line, researcher_email_body, researcher_email )
-                    #send_institution_email(email_SUBJECT_line, institution_email_body, institution_email)
+                    # Send emails (currently commented out)
+                    #send_researcher_email(email_SUBJECT_line, researcher_text, researcher_html, researcher_email)
+                    #send_institution_email(email_SUBJECT_line, institution_text, institution_html, institution_email)
 
                 except Exception as e:
                     logger.error(f"Error preparing email for project {project_info['name']}: {e}")

@@ -118,6 +118,7 @@ class SequenceFileAttacher:
     def get_step_artifacts(self, step_xml: ET.Element) -> List[Dict[str, str]]:
         """
         Extract output artifacts from step XML.
+        Filters for ResultFile type outputs with PerAllInputs generation type.
 
         Args:
             step_xml: Step XML element
@@ -132,16 +133,23 @@ class SequenceFileAttacher:
             output = io_map.find('prc:output', NSMAP)
             if output is not None:
                 artifact_uri = output.get('uri')
-                output_type = output.get('output-type', 'Analyte')
+                output_type = output.get('type')
+                output_gen_type = output.get('output-generation-type')
 
-                if artifact_uri:
+                # Filter for ResultFile outputs with PerAllInputs generation type
+                if (artifact_uri and
+                    output_type == 'ResultFile' and
+                    output_gen_type == 'PerAllInputs'):
+
                     artifacts.append({
                         'uri': artifact_uri,
                         'type': output_type,
+                        'output_generation_type': output_gen_type,
                         'limsid': output.get('limsid')
                     })
+                    self.logger.debug(f"Found ResultFile artifact: {output.get('limsid')} (PerAllInputs)")
 
-        self.logger.info(f"Found {len(artifacts)} artifacts in step")
+        self.logger.info(f"Found {len(artifacts)} ResultFile artifacts with PerAllInputs generation type")
         return artifacts
 
     def get_artifact_details(self, artifact_uri: str) -> ET.Element:

@@ -108,6 +108,38 @@ python3 attachZippedSequenceFiles.py \
   -l "/var/log/clarity/attach_seq.log"
 ```
 
+## How the Script Locates Zip Files
+
+The script automatically finds and processes zip files attached to step artifacts:
+
+### Artifact Filtering
+The script specifically looks for outputs with:
+- **Type**: `ResultFile`
+- **Generation Type**: `PerAllInputs`
+
+Example artifact XML:
+```xml
+<output limsid="92-10335"
+        type="ResultFile"
+        output-generation-type="PerAllInputs"
+        uri="https://clarity.example.com/api/v2/artifacts/92-10335"/>
+```
+
+### Zip File Location
+1. **Upload Location**: Attach the zip file to a ResultFile artifact in the step
+2. **Automatic Discovery**: The script searches all ResultFile/PerAllInputs artifacts for attached files
+3. **Zip Detection**: Any file with `.zip` extension is processed
+4. **Multiple Zips**: If multiple zip files are attached, all are processed
+
+### Where to Upload in Clarity LIMS
+1. Navigate to your step that has the ResultFile output configured
+2. Find the ResultFile artifact (usually visible in the step outputs section)
+3. Click "Attach File" or use the Files section
+4. Upload your zip file containing .ab1 and .seq files
+5. Run the EPP script
+
+The script will automatically find and process the zip file from this ResultFile artifact.
+
 ## File Matching Logic
 
 The script uses a two-tier matching approach:

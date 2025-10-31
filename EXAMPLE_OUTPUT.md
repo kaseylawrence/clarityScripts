@@ -30,7 +30,7 @@ bash -c "python3 /opt/gls/clarity/customextensions/attachZippedSequenceFiles.py 
 2025-10-31 14:32:15 - SequenceFileAttacher - INFO - ================================================================================
 2025-10-31 14:32:15 - SequenceFileAttacher - INFO - Initialized SequenceFileAttacher for https://clarity.example.com
 2025-10-31 14:32:15 - SequenceFileAttacher - INFO - Retrieving step details from https://clarity.example.com/api/v2/processes/24-12345
-2025-10-31 14:32:16 - SequenceFileAttacher - INFO - Found 8 artifacts in step
+2025-10-31 14:32:16 - SequenceFileAttacher - INFO - Found 8 ResultFile artifacts with PerAllInputs generation type
 2025-10-31 14:32:17 - SequenceFileAttacher - INFO - Found 8 samples in step
 2025-10-31 14:32:17 - SequenceFileAttacher - INFO - Processing zip file: sequencing_results_2025-10-31.zip
 2025-10-31 14:32:17 - SequenceFileAttacher - INFO - Extracting zip file with 16 files
@@ -87,7 +87,7 @@ bash -c "python3 /opt/gls/clarity/customextensions/attachZippedSequenceFiles.py 
 2025-10-31 15:45:22 - SequenceFileAttacher - INFO - ================================================================================
 2025-10-31 15:45:22 - SequenceFileAttacher - INFO - Initialized SequenceFileAttacher for https://clarity.example.com
 2025-10-31 15:45:22 - SequenceFileAttacher - INFO - Retrieving step details from https://clarity.example.com/api/v2/processes/24-12346
-2025-10-31 15:45:23 - SequenceFileAttacher - INFO - Found 4 artifacts in step
+2025-10-31 15:45:23 - SequenceFileAttacher - INFO - Found 4 ResultFile artifacts with PerAllInputs generation type
 2025-10-31 15:45:24 - SequenceFileAttacher - INFO - Found 4 samples in step
 2025-10-31 15:45:24 - SequenceFileAttacher - INFO - Processing zip file: batch_AB123.zip
 2025-10-31 15:45:24 - SequenceFileAttacher - INFO - Extracting zip file with 12 files
@@ -127,7 +127,7 @@ bash -c "python3 /opt/gls/clarity/customextensions/attachZippedSequenceFiles.py 
 2025-10-31 16:10:05 - SequenceFileAttacher - INFO - ================================================================================
 2025-10-31 16:10:05 - SequenceFileAttacher - INFO - Initialized SequenceFileAttacher for https://clarity.example.com
 2025-10-31 16:10:05 - SequenceFileAttacher - INFO - Retrieving step details from https://clarity.example.com/api/v2/processes/24-12347
-2025-10-31 16:10:06 - SequenceFileAttacher - INFO - Found 6 artifacts in step
+2025-10-31 16:10:06 - SequenceFileAttacher - INFO - Found 6 ResultFile artifacts with PerAllInputs generation type
 2025-10-31 16:10:07 - SequenceFileAttacher - INFO - Found 6 samples in step
 2025-10-31 16:10:08 - SequenceFileAttacher - WARNING - No zip files found attached to artifacts in this step
 2025-10-31 16:10:08 - SequenceFileAttacher - INFO - ================================================================================
@@ -153,7 +153,7 @@ bash -c "python3 /opt/gls/clarity/customextensions/attachZippedSequenceFiles.py 
 2025-10-31 16:30:18 - SequenceFileAttacher - INFO - ================================================================================
 2025-10-31 16:30:18 - SequenceFileAttacher - INFO - Initialized SequenceFileAttacher for https://clarity.example.com
 2025-10-31 16:30:18 - SequenceFileAttacher - INFO - Retrieving step details from https://clarity.example.com/api/v2/processes/24-12348
-2025-10-31 16:30:19 - SequenceFileAttacher - INFO - Found 2 artifacts in step
+2025-10-31 16:30:19 - SequenceFileAttacher - INFO - Found 2 ResultFile artifacts with PerAllInputs generation type
 2025-10-31 16:30:20 - SequenceFileAttacher - INFO - Found 2 samples in step
 2025-10-31 16:30:20 - SequenceFileAttacher - INFO - Processing zip file: sequences.zip
 2025-10-31 16:30:20 - SequenceFileAttacher - INFO - Extracting zip file with 2 files
@@ -216,7 +216,7 @@ The log file contains the same INFO messages as console, plus DEBUG level detail
 2025-10-31 14:32:15 - SequenceFileAttacher - INFO - Initialized SequenceFileAttacher for https://clarity.example.com
 2025-10-31 14:32:15 - SequenceFileAttacher - INFO - Retrieving step details from https://clarity.example.com/api/v2/processes/24-12345
 2025-10-31 14:32:16 - SequenceFileAttacher - DEBUG - Successfully retrieved step: 24-12345
-2025-10-31 14:32:16 - SequenceFileAttacher - INFO - Found 8 artifacts in step
+2025-10-31 14:32:16 - SequenceFileAttacher - INFO - Found 8 ResultFile artifacts with PerAllInputs generation type
 2025-10-31 14:32:16 - SequenceFileAttacher - DEBUG - Retrieving artifact from https://clarity.example.com/api/v2/artifacts/2-12345
 2025-10-31 14:32:16 - SequenceFileAttacher - DEBUG - Retrieving artifact from https://clarity.example.com/api/v2/artifacts/2-12346
 2025-10-31 14:32:16 - SequenceFileAttacher - DEBUG - Retrieving artifact from https://clarity.example.com/api/v2/artifacts/2-12347

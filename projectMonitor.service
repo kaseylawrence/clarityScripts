@@ -1,0 +1,17 @@
+[Unit]
+Description=Clarity LIMS - Custom Project Name Incrementer
+Wants=clarity_tomcat.service
+After=clarity_tomcat.service
+
+[Service]
+Type=simple
+User=glsjboss
+WorkingDirectory = /opt/gls/clarity/customextensions/sanger
+ExecStart=/opt/gls/clarity/customextensions/sanger/projectMonitor.sh
+ExecStop=/usr/bin/kill -SIGTERM $MAINPID
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

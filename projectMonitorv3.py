@@ -12,6 +12,7 @@ import subprocess
 import logging
 import traceback
 import os
+import json
 from datetime import datetime
 from typing import Set, Optional
 from xml.etree import ElementTree as ET
@@ -43,6 +44,7 @@ LIMS_PASSWORD = os.environ['apiuser_pw']
 NAMING_SCRIPT = '/opt/gls/clarity/customextensions/counterManager.py'  # Path to your naming script
 CHECK_INTERVAL = 60  # seconds between checks
 UDF_PROCESSED = 'Auto-Renamed'  # UDF to mark processed projects
+PROCESSED_PROJECTS_FILE = 'processed_projects.json'  # File to persist processed project IDs
 
 # Clarity API namespaces
 NSMAP = {
@@ -109,20 +111,110 @@ class ClarityProjectMonitor:
         self.api = glsapiutil3.glsapiutil3()
         self.api.setHostname(base_uri)
         self.api.setup(username, password)
-        
+
         self.processed_projects: Set[str] = set()
+        self.persistence_file = PROCESSED_PROJECTS_FILE
+
+        # Check if this is first run
+        is_first_run = not os.path.exists(self.persistence_file)
+
+        # Load previously processed projects
+        self._load_processed_projects()
+
         logger.info(f"Connected to Clarity LIMS at {base_uri}")
-    
-    def get_all_projects(self):
-        """Retrieve all projects from Clarity LIMS with pagination support."""
+
+        # If first run, initialize all existing projects as processed
+        if is_first_run and len(self.processed_projects) == 0:
+            logger.info("First run detected - initializing existing projects")
+            self.initialize_existing_projects()
+        else:
+            logger.info(f"Loaded {len(self.processed_projects)} previously processed projects")
+
+    def _load_processed_projects(self):
+        """Load the set of processed project IDs from disk."""
+        try:
+            if os.path.exists(self.persistence_file):
+                with open(self.persistence_file, 'r') as f:
+                    data = json.load(f)
+                    self.processed_projects = set(data.get('processed_projects', []))
+                    logger.info(f"Loaded {len(self.processed_projects)} processed projects from {self.persistence_file}")
+            else:
+                logger.info(f"No persistence file found at {self.persistence_file}, starting fresh")
+        except Exception as e:
+            logger.error(f"Error loading processed projects from {self.persistence_file}: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            # Continue with empty set on error
+
+    def _save_processed_projects(self):
+        """Save the set of processed project IDs to disk."""
+        try:
+            data = {
+                'processed_projects': list(self.processed_projects),
+                'last_updated': datetime.now().isoformat()
+            }
+            with open(self.persistence_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            logger.debug(f"Saved {len(self.processed_projects)} processed projects to {self.persistence_file}")
+        except Exception as e:
+            logger.error(f"Error saving processed projects to {self.persistence_file}: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
+    def initialize_existing_projects(self):
+        """
+        Mark all existing projects as processed without renaming them.
+
+        This should be called on first startup to prevent the script from
+        processing old projects and incrementing the counter unnecessarily.
+        """
+        logger.info("Initializing: marking all existing projects as processed...")
+
+        try:
+            project_uris = self.get_all_projects(filter_unprocessed=False)
+            logger.info(f"Found {len(project_uris)} total projects in LIMS")
+
+            for uri in project_uris:
+                project_xml = self.get_project_details(uri)
+                if project_xml is not None:
+                    project_id = project_xml.get('limsid')
+                    if project_id:
+                        self.processed_projects.add(project_id)
+
+            logger.info(f"Marked {len(self.processed_projects)} projects as processed")
+
+            # Save to persistence file
+            self._save_processed_projects()
+            logger.info("Initialization complete - all existing projects marked as processed")
+
+        except Exception as e:
+            logger.error(f"Error during initialization: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+
+    def get_all_projects(self, filter_unprocessed=True):
+        """
+        Retrieve all projects from Clarity LIMS with pagination support.
+
+        Args:
+            filter_unprocessed: If True, only retrieve projects where Auto-Renamed UDF != 'YES'
+        """
         all_projects = []
         start_index = 0
         page_size = 500  # Clarity default page size
-        
+
         try:
             while True:
                 # Build URI with pagination parameters
                 uri = f"{self.api.getBaseURI()}projects?start-index={start_index}"
+
+                # Add UDF filter to only get unprocessed projects
+                # Note: Clarity API may not support UDF filtering in project list endpoint
+                # In that case, we filter after retrieval in is_project_processed()
+                # Keeping this parameter for potential future API improvements
+                if filter_unprocessed:
+                    # Some Clarity versions support: &udf.Auto-Renamed!=YES
+                    # But this is not universally supported, so we rely on post-filtering
+                    pass
+
                 print('Project URI GET ', uri)
                 response = self.api.GET(uri)
                 print(response)
@@ -168,19 +260,35 @@ class ClarityProjectMonitor:
             return None
     
     def is_project_processed(self, project_xml):
-        """Check if project has already been auto-renamed."""
+        """
+        Check if project has already been auto-renamed.
+
+        Returns True if:
+        - Project ID is in processed_projects set, OR
+        - Auto-Renamed UDF exists and equals 'YES'
+
+        Returns False if:
+        - Auto-Renamed UDF doesn't exist, OR
+        - Auto-Renamed UDF exists but != 'YES'
+        """
         # Extract project LIMS ID
         project_id = project_xml.get('limsid')
-        
+
         if project_id in self.processed_projects:
             return True
-        
-        # Check UDF flag
+
+        # Check UDF flag - only process if UDF is NOT 'YES'
         for udf in project_xml.findall('.//udf:field', NSMAP):
-            if udf.get('name') == UDF_PROCESSED and udf.text == 'YES':
-                self.processed_projects.add(project_id)
-                return True
-        
+            if udf.get('name') == UDF_PROCESSED:
+                udf_value = udf.text if udf.text else ''
+                if udf_value.strip().upper() == 'YES':
+                    # Mark as processed and skip
+                    self.processed_projects.add(project_id)
+                    return True
+                # If UDF exists but is not 'YES', treat as unprocessed
+                return False
+
+        # UDF doesn't exist - treat as unprocessed
         return False
     
     def get_new_projects(self):
@@ -340,25 +448,29 @@ class ClarityProjectMonitor:
     def process_projects(self):
         """Main processing loop - check for new projects and rename them."""
         logger.info("Checking for new projects...")
-        
+
         new_projects = self.get_new_projects()
-        
+
         if not new_projects:
             logger.info("No new projects found")
             return
-        
+
         logger.info(f"Found {len(new_projects)} new project(s)")
-        
+
+        projects_modified = False
+
         for project_uri, project_xml in new_projects:
             project_info = self.extract_project_info(project_xml)
             logger.info(f"Processing project: {project_info['name']} (ID: {project_info['id']})")
-            
+
             # Generate new name
             new_name = self.generate_new_name(project_info)
-            
+
             if new_name and new_name != project_info['name']:
                 # Rename the project
-                self.rename_project(project_xml, project_info, new_name)
+                if self.rename_project(project_xml, project_info, new_name):
+                    projects_modified = True
+
                 #send the email
                 researcher_response = self.api.GET(project_info['researcher_uri'])
                 researcher_xml = ET.fromstring(researcher_response)
@@ -372,12 +484,17 @@ class ClarityProjectMonitor:
 
                 #Not Sending emails yet send_researcher_email( email_SUBJECT_line, researcher_email_body, researcher_email )
                 # send_institution_email(email_SUBJECT_line, instituion_email_body,institution_email)
-                
+
 
 
             else:
                 logger.warning(f"Skipping rename for {project_info['name']} - invalid or same name")
                 self.processed_projects.add(project_info['id'])
+                projects_modified = True
+
+        # Save processed projects after each check cycle
+        if projects_modified:
+            self._save_processed_projects()
     
     def run(self, interval: int = CHECK_INTERVAL):
         """Run the monitor continuously."""
@@ -399,12 +516,39 @@ class ClarityProjectMonitor:
 
 def main():
     """Main entry point."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Clarity LIMS Project Monitor')
+    parser.add_argument('--init', action='store_true',
+                        help='Initialize by marking all existing projects as processed (without renaming)')
+    parser.add_argument('--reset', action='store_true',
+                        help='Reset processed projects list and re-initialize')
+
+    args = parser.parse_args()
+
     monitor = ClarityProjectMonitor(
         base_uri=LIMS_BASE_URI,
         username=LIMS_USERNAME,
         password=LIMS_PASSWORD
     )
-    
+
+    # Handle initialization/reset flags
+    if args.reset:
+        logger.info("Resetting processed projects list...")
+        monitor.processed_projects.clear()
+        if os.path.exists(monitor.persistence_file):
+            os.remove(monitor.persistence_file)
+        monitor.initialize_existing_projects()
+        logger.info("Reset complete")
+        return
+
+    if args.init:
+        logger.info("Manual initialization requested...")
+        monitor.initialize_existing_projects()
+        logger.info("Initialization complete")
+        return
+
+    # Normal operation
     monitor.run()
 
 

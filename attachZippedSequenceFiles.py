@@ -24,9 +24,11 @@ import zipfile
 import tempfile
 import base64
 import shutil
+import requests
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from xml.etree import ElementTree as ET
+from requests.auth import HTTPBasicAuth
 
 # Import Clarity API utility
 import glsapiutil3
@@ -92,6 +94,8 @@ class SequenceFileAttacher:
         self.api.setHostname(base_uri)
         self.api.setup(username, password)
         self.base_uri = base_uri
+        self.username = username
+        self.password = password
 
         self.logger.info(f"Initialized SequenceFileAttacher for {base_uri}")
 
@@ -382,9 +386,15 @@ class SequenceFileAttacher:
             # Convert XML to string
             file_xml_string = ET.tostring(file_xml, encoding='unicode')
 
-            # POST file metadata first
+            # POST file metadata first using requests
             files_endpoint = f"{self.base_uri}/api/v2/files"
-            response = self.api.POST(file_xml_string, files_endpoint)
+
+            response = requests.post(
+                files_endpoint,
+                data=file_xml_string,
+                auth=HTTPBasicAuth(self.username, self.password),
+                headers={'Content-Type': 'application/xml'}
+            )
 
             if response.status_code not in [200, 201]:
                 self.logger.error(f"Failed to create file metadata: {response.status_code} - {response.text}")
@@ -400,16 +410,10 @@ class SequenceFileAttacher:
             # Upload file content
             upload_uri = f"{file_uri}/upload"
 
-            # For file upload, we need to POST the raw file content
-            # The glsapiutil3 library should handle this, but we may need to use requests directly
-            import requests
-            from requests.auth import HTTPBasicAuth
-
-            # Get credentials from API object
             upload_response = requests.post(
                 upload_uri,
                 data=file_content,
-                auth=HTTPBasicAuth(self.api.username, self.api.password),
+                auth=HTTPBasicAuth(self.username, self.password),
                 headers={'Content-Type': 'application/octet-stream'}
             )
 

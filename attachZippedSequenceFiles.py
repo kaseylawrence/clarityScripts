@@ -112,10 +112,8 @@ class SequenceFileAttacher:
         self.logger.info(f"Retrieving step details from {step_uri}")
         response = self.api.GET(step_uri)
 
-        if response.status_code != 200:
-            raise Exception(f"Failed to retrieve step: {response.status_code} - {response.text}")
-
-        step_xml = ET.fromstring(response.text)
+        # glsapiutil3.GET() returns raw content, not a response object
+        step_xml = ET.fromstring(response)
         self.logger.debug(f"Successfully retrieved step: {step_xml.get('limsid')}")
         return step_xml
 
@@ -169,10 +167,8 @@ class SequenceFileAttacher:
         self.logger.debug(f"Retrieving artifact from {artifact_uri}")
         response = self.api.GET(artifact_uri)
 
-        if response.status_code != 200:
-            raise Exception(f"Failed to retrieve artifact: {response.status_code}")
-
-        return ET.fromstring(response.text)
+        # glsapiutil3.GET() returns raw content, not a response object
+        return ET.fromstring(response)
 
     def get_artifact_files(self, artifact_xml: ET.Element) -> List[Dict[str, str]]:
         """
@@ -211,10 +207,8 @@ class SequenceFileAttacher:
         self.logger.debug(f"Retrieving file from {file_uri}")
         response = self.api.GET(file_uri)
 
-        if response.status_code != 200:
-            raise Exception(f"Failed to retrieve file: {response.status_code}")
-
-        file_xml = ET.fromstring(response.text)
+        # glsapiutil3.GET() returns raw content, not a response object
+        file_xml = ET.fromstring(response)
 
         # Get filename
         original_location = file_xml.find('.//file:original-location', NSMAP)
@@ -241,11 +235,8 @@ class SequenceFileAttacher:
 
         response = self.api.GET(download_uri)
 
-        if response.status_code != 200:
-            raise Exception(f"Failed to download file: {response.status_code}")
-
-        # Response content is already in bytes
-        return response.content
+        # glsapiutil3.GET() returns raw content (bytes for binary files)
+        return response
 
     def extract_sequence_files(self, zip_content: bytes, temp_dir: str) -> List[Path]:
         """

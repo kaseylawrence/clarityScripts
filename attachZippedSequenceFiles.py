@@ -317,34 +317,38 @@ class SequenceFileAttacher:
 
         return sequence_files
 
-    def get_sample_from_artifact(self, artifact_xml: ET.Element) -> Optional[Dict[str, str]]:
+    def get_samples_from_artifact(self, artifact_xml: ET.Element) -> List[Dict[str, str]]:
         """
-        Get the submitted sample associated with an artifact.
+        Get all submitted samples associated with an artifact.
 
         Args:
             artifact_xml: Artifact XML element
 
         Returns:
-            Dict with sample URI and name, or None if not found
+            List of dicts with sample URI, limsid, and name
         """
-        # Artifacts have a sample element that references the original submitted sample
-        sample_elem = artifact_xml.find('.//art:sample', NSMAP)
+        samples = []
 
-        if sample_elem is not None:
+        # Artifacts can have multiple sample elements
+        # First try with namespace
+        sample_elems = artifact_xml.findall('.//art:sample', NSMAP)
+
+        # If not found, try without namespace
+        if not sample_elems:
+            sample_elems = artifact_xml.findall('.//sample')
+
+        for sample_elem in sample_elems:
             sample_uri = sample_elem.get('uri')
             sample_limsid = sample_elem.get('limsid')
 
-            # Get sample name from the artifact
-            name_elem = artifact_xml.find('.//art:name', NSMAP)
-            sample_name = name_elem.text if name_elem is not None else sample_limsid
+            if sample_uri and sample_limsid:
+                samples.append({
+                    'uri': sample_uri,
+                    'limsid': sample_limsid,
+                    'name': sample_limsid  # Use limsid as name for matching
+                })
 
-            return {
-                'uri': sample_uri,
-                'limsid': sample_limsid,
-                'name': sample_name
-            }
-
-        return None
+        return samples
 
     def match_file_to_samples(self, filename: str, samples: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
         """
@@ -523,13 +527,22 @@ class SequenceFileAttacher:
 
             # Get samples from artifacts
             samples = []
+            seen_sample_uris = set()
+
             for artifact_info in artifacts:
                 artifact_xml = self.get_artifact_details(artifact_info['uri'])
-                sample = self.get_sample_from_artifact(artifact_xml)
-                if sample:
-                    samples.append(sample)
+                artifact_samples = self.get_samples_from_artifact(artifact_xml)
 
-            self.logger.info(f"Found {len(samples)} samples in step")
+                if artifact_samples:
+                    self.logger.debug(f"Artifact {artifact_info['limsid']} has {len(artifact_samples)} samples")
+
+                    # Add samples, avoiding duplicates
+                    for sample in artifact_samples:
+                        if sample['uri'] not in seen_sample_uris:
+                            samples.append(sample)
+                            seen_sample_uris.add(sample['uri'])
+
+            self.logger.info(f"Found {len(samples)} unique samples across all artifacts")
 
             # Look for zip files attached to artifacts
             zip_files_found = False

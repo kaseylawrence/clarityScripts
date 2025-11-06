@@ -129,14 +129,19 @@ class SequenceFileAttacher:
             List of dicts containing artifact URIs and types
         """
         artifacts = []
+        all_outputs_found = 0
 
         # Look for input-output-maps to get artifacts
         for io_map in step_xml.findall('.//prc:input-output-map', NSMAP):
             output = io_map.find('prc:output', NSMAP)
             if output is not None:
+                all_outputs_found += 1
                 artifact_uri = output.get('uri')
                 output_type = output.get('type')
                 output_gen_type = output.get('output-generation-type')
+
+                # Log ALL outputs for debugging
+                self.logger.debug(f"Found output: limsid={output.get('limsid')}, type={output_type}, gen-type={output_gen_type}")
 
                 # Filter for ResultFile outputs with PerAllInputs generation type
                 if (artifact_uri and
@@ -149,9 +154,15 @@ class SequenceFileAttacher:
                         'output_generation_type': output_gen_type,
                         'limsid': output.get('limsid')
                     })
-                    self.logger.debug(f"Found ResultFile artifact: {output.get('limsid')} (PerAllInputs)")
+                    self.logger.info(f"Matched ResultFile artifact: {output.get('limsid')} (PerAllInputs)")
 
-        self.logger.info(f"Found {len(artifacts)} ResultFile artifacts with PerAllInputs generation type")
+        self.logger.info(f"Found {all_outputs_found} total outputs, {len(artifacts)} matched ResultFile/PerAllInputs criteria")
+
+        if all_outputs_found == 0:
+            self.logger.warning("No outputs found in step at all - check step configuration")
+        elif len(artifacts) == 0:
+            self.logger.warning("Outputs exist but none match ResultFile+PerAllInputs - check output configuration")
+
         return artifacts
 
     def get_artifact_details(self, artifact_uri: str) -> ET.Element:
@@ -446,9 +457,28 @@ class SequenceFileAttacher:
             artifacts = self.get_step_artifacts(step_xml)
 
             if not artifacts:
-                self.logger.warning("No artifacts found in step")
-                results['errors'].append("No artifacts found in step")
-                return results
+                self.logger.warning("No ResultFile artifacts with PerAllInputs found in step")
+
+                # Try to find ANY output artifacts as fallback
+                self.logger.info("Attempting to find ANY output artifacts as fallback...")
+                all_outputs = []
+                for io_map in step_xml.findall('.//prc:input-output-map', NSMAP):
+                    output = io_map.find('prc:output', NSMAP)
+                    if output is not None and output.get('uri'):
+                        all_outputs.append({
+                            'uri': output.get('uri'),
+                            'type': output.get('type', 'Unknown'),
+                            'output_generation_type': output.get('output-generation-type', 'Unknown'),
+                            'limsid': output.get('limsid')
+                        })
+
+                if all_outputs:
+                    self.logger.info(f"Found {len(all_outputs)} output artifacts of any type - using these instead")
+                    artifacts = all_outputs
+                else:
+                    self.logger.error("No output artifacts of any kind found in step")
+                    results['errors'].append("No artifacts found in step")
+                    return results
 
             # Get samples from artifacts
             samples = []

@@ -136,16 +136,29 @@ class SequenceFileAttacher:
         artifacts = []
         all_outputs_found = 0
 
-        # Look for input-output-maps - try both step and process namespaces
-        io_maps = step_xml.findall('.//stp:input-output-map', NSMAP)
+        # Look for input-output-maps
+        # Note: These elements often have NO namespace prefix in the XML
+        io_maps = step_xml.findall('.//input-output-map')
+
+        # If not found without namespace, try with step namespace
+        if not io_maps:
+            io_maps = step_xml.findall('.//stp:input-output-map', NSMAP)
+
+        # If still not found, try with process namespace
         if not io_maps:
             io_maps = step_xml.findall('.//prc:input-output-map', NSMAP)
 
         self.logger.debug(f"Found {len(io_maps)} input-output-map elements")
 
         for io_map in io_maps:
-            # Try step namespace first, then process namespace
-            output = io_map.find('stp:output', NSMAP)
+            # Try to find output element (usually no namespace)
+            output = io_map.find('output')
+
+            # If not found, try step namespace
+            if output is None:
+                output = io_map.find('stp:output', NSMAP)
+
+            # If still not found, try process namespace
             if output is None:
                 output = io_map.find('prc:output', NSMAP)
 
@@ -478,13 +491,17 @@ class SequenceFileAttacher:
                 self.logger.info("Attempting to find ANY output artifacts as fallback...")
                 all_outputs = []
 
-                # Try both step and process namespaces
-                fallback_io_maps = step_xml.findall('.//stp:input-output-map', NSMAP)
+                # Try finding elements without namespace first
+                fallback_io_maps = step_xml.findall('.//input-output-map')
+                if not fallback_io_maps:
+                    fallback_io_maps = step_xml.findall('.//stp:input-output-map', NSMAP)
                 if not fallback_io_maps:
                     fallback_io_maps = step_xml.findall('.//prc:input-output-map', NSMAP)
 
                 for io_map in fallback_io_maps:
-                    output = io_map.find('stp:output', NSMAP)
+                    output = io_map.find('output')
+                    if output is None:
+                        output = io_map.find('stp:output', NSMAP)
                     if output is None:
                         output = io_map.find('prc:output', NSMAP)
 

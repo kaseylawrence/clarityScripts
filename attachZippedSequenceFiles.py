@@ -65,6 +65,7 @@ def setup_logging(log_file: str = './attach_sequence_files.log'):
 NSMAP = {
     'art': 'http://genologics.com/ri/artifact',
     'prc': 'http://genologics.com/ri/process',
+    'stp': 'http://genologics.com/ri/step',
     'smp': 'http://genologics.com/ri/sample',
     'udf': 'http://genologics.com/ri/userdefined',
     'file': 'http://genologics.com/ri/file',
@@ -109,6 +110,10 @@ class SequenceFileAttacher:
         Returns:
             ElementTree Element containing step XML
         """
+        # Ensure we're using the /details endpoint which includes input-output-maps
+        if not step_uri.endswith('/details'):
+            step_uri = f"{step_uri}/details"
+
         self.logger.info(f"Retrieving step details from {step_uri}")
         response = self.api.GET(step_uri)
 
@@ -131,9 +136,19 @@ class SequenceFileAttacher:
         artifacts = []
         all_outputs_found = 0
 
-        # Look for input-output-maps to get artifacts
-        for io_map in step_xml.findall('.//prc:input-output-map', NSMAP):
-            output = io_map.find('prc:output', NSMAP)
+        # Look for input-output-maps - try both step and process namespaces
+        io_maps = step_xml.findall('.//stp:input-output-map', NSMAP)
+        if not io_maps:
+            io_maps = step_xml.findall('.//prc:input-output-map', NSMAP)
+
+        self.logger.debug(f"Found {len(io_maps)} input-output-map elements")
+
+        for io_map in io_maps:
+            # Try step namespace first, then process namespace
+            output = io_map.find('stp:output', NSMAP)
+            if output is None:
+                output = io_map.find('prc:output', NSMAP)
+
             if output is not None:
                 all_outputs_found += 1
                 artifact_uri = output.get('uri')
@@ -462,8 +477,17 @@ class SequenceFileAttacher:
                 # Try to find ANY output artifacts as fallback
                 self.logger.info("Attempting to find ANY output artifacts as fallback...")
                 all_outputs = []
-                for io_map in step_xml.findall('.//prc:input-output-map', NSMAP):
-                    output = io_map.find('prc:output', NSMAP)
+
+                # Try both step and process namespaces
+                fallback_io_maps = step_xml.findall('.//stp:input-output-map', NSMAP)
+                if not fallback_io_maps:
+                    fallback_io_maps = step_xml.findall('.//prc:input-output-map', NSMAP)
+
+                for io_map in fallback_io_maps:
+                    output = io_map.find('stp:output', NSMAP)
+                    if output is None:
+                        output = io_map.find('prc:output', NSMAP)
+
                     if output is not None and output.get('uri'):
                         all_outputs.append({
                             'uri': output.get('uri'),

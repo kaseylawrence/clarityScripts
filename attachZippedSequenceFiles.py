@@ -9,12 +9,16 @@ import tempfile
 import base64
 import shutil
 import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from xml.etree import ElementTree as ET
 from requests.auth import HTTPBasicAuth
 from urllib.parse import quote
 import glsapiutil3
+from jinja2 import Template
 
 def setupArguments():
     aParser = argparse.ArgumentParser("Groups sequence files by project, creates project-specific zip files, and uploads them to Clarity LIMS projects with LabLink publishing.")
@@ -835,7 +839,8 @@ def publish_files_to_lablink(api, uploaded_zips):
                         'project_name': project_name,
                         'project_limsid': project_limsid,
                         'file_limsid': file_limsid,
-                        'zip_filename': zip_info['zip_filename']
+                        'zip_filename': zip_info['zip_filename'],
+                        'file_count': zip_info.get('file_count', 0)
                     })
                 else:
                     print(f"  ⚠ Published but is-published = '{pub_value}' (expected 'true')")
@@ -857,6 +862,172 @@ def publish_files_to_lablink(api, uploaded_zips):
     print(f"DEBUG LOG FILE: {debug_log_path}")
     print(f"{'='*50}")
     return published_files
+
+
+def get_researcher_email_from_project(api, project_uri):
+    """Get the researcher's email address from the project."""
+    try:
+        print(f"  DEBUG: Getting researcher email from project: {project_uri}")
+
+        # Get the project
+        project_response = api.GET(project_uri)
+        project_root = ET.fromstring(project_response)
+
+        # Find the researcher element
+        researcher_elem = project_root.find('.//researcher')
+        if researcher_elem is None:
+            print(f"  WARNING: No researcher found in project")
+            return None
+
+        researcher_uri = researcher_elem.get('uri')
+        if not researcher_uri:
+            print(f"  WARNING: No researcher URI found")
+            return None
+
+        print(f"  DEBUG: Found researcher URI: {researcher_uri}")
+
+        # Get the researcher details
+        researcher_response = api.GET(researcher_uri)
+        researcher_root = ET.fromstring(researcher_response)
+
+        # Find the email element
+        email_elem = researcher_root.find('.//email')
+        if email_elem is None or email_elem.text is None:
+            print(f"  WARNING: No email found for researcher")
+            return None
+
+        email = email_elem.text
+        print(f"  DEBUG: Found researcher email: {email}")
+        return email
+
+    except Exception as e:
+        print(f"  ERROR: Exception getting researcher email: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def get_sample_names_from_project(api, project_uri):
+    """Get all sample names associated with a project."""
+    try:
+        print(f"  DEBUG: Getting sample names from project: {project_uri}")
+
+        # Get the project
+        project_response = api.GET(project_uri)
+        project_root = ET.fromstring(project_response)
+
+        # Get the project LIMS ID to query samples
+        project_limsid = project_root.get('limsid')
+
+        # Query for samples in this project
+        base_uri = api.getBaseURI().rstrip('/')
+        samples_uri = f"{base_uri}/api/v2/samples?projectlimsid={project_limsid}"
+
+        print(f"  DEBUG: Querying samples: {samples_uri}")
+        samples_response = api.GET(samples_uri)
+        samples_root = ET.fromstring(samples_response)
+
+        # Extract sample names
+        sample_names = []
+        for sample_elem in samples_root.findall('.//sample'):
+            name_elem = sample_elem.find('.//name')
+            if name_elem is not None and name_elem.text:
+                sample_names.append(name_elem.text)
+
+        print(f"  DEBUG: Found {len(sample_names)} samples")
+        return sample_names
+
+    except Exception as e:
+        print(f"  ERROR: Exception getting sample names: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def send_notification_email(api, published_file_info, projects):
+    """Send email notification to researcher about published files."""
+    project_name = published_file_info['project_name']
+    project_limsid = published_file_info['project_limsid']
+    zip_filename = published_file_info['zip_filename']
+    file_count = published_file_info.get('file_count', 0)
+
+    # Get project URI from the projects dict
+    project_data = projects.get(project_limsid)
+    if not project_data:
+        print(f"  ERROR: Could not find project data for {project_limsid}")
+        return False
+
+    project_uri = project_data['project_uri']
+
+    print(f"\n  Preparing email notification for project: {project_name}")
+
+    # Get researcher email
+    researcher_email = get_researcher_email_from_project(api, project_uri)
+    if not researcher_email:
+        print(f"  ERROR: Could not get researcher email, skipping notification")
+        return False
+
+    # Get sample names from project files
+    sample_names = [f['artifact_name'] for f in project_data['files']]
+
+    # Read email templates
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    html_template_path = os.path.join(script_dir, 'templates', 'sequencing_files_notification.html')
+    text_template_path = os.path.join(script_dir, 'templates', 'sequencing_files_notification.txt')
+
+    try:
+        with open(html_template_path, 'r') as f:
+            html_template_content = f.read()
+
+        with open(text_template_path, 'r') as f:
+            text_template_content = f.read()
+    except Exception as e:
+        print(f"  ERROR: Could not read email templates: {e}")
+        return False
+
+    # Render templates with Jinja2
+    template_vars = {
+        'project_name': project_name,
+        'project_id': project_limsid,
+        'file_count': file_count,
+        'zip_filename': zip_filename,
+        'sample_names': sample_names
+    }
+
+    try:
+        html_template = Template(html_template_content)
+        text_template = Template(text_template_content)
+
+        html_body = html_template.render(**template_vars)
+        text_body = text_template.render(**template_vars)
+    except Exception as e:
+        print(f"  ERROR: Could not render email templates: {e}")
+        return False
+
+    # Create email message
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = f'Sequencing Files Available - {project_name}'
+    msg['From'] = 'noreply@clarity.lims'
+    msg['To'] = researcher_email
+
+    # Attach both plain text and HTML versions
+    text_part = MIMEText(text_body, 'plain')
+    html_part = MIMEText(html_body, 'html')
+    msg.attach(text_part)
+    msg.attach(html_part)
+
+    # Send email via localhost SMTP
+    try:
+        print(f"  Sending email to: {researcher_email}")
+        with smtplib.SMTP('localhost', 25) as smtp:
+            smtp.send_message(msg)
+        print(f"  ✓ Email sent successfully to {researcher_email}")
+        return True
+    except Exception as e:
+        print(f"  ERROR: Could not send email: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def main():
@@ -911,6 +1082,29 @@ def main():
     # Publish files to LabLink
     published_files = publish_files_to_lablink(api, uploaded_zips)
 
+    # Send email notifications for published files
+    print("\n" + "="*50)
+    print("SENDING EMAIL NOTIFICATIONS")
+    print("="*50)
+
+    emails_sent = 0
+    emailed_projects = set()
+    for published_file in published_files:
+        try:
+            success = send_notification_email(api, published_file, projects)
+            if success:
+                emails_sent += 1
+                emailed_projects.add(published_file['project_limsid'])
+        except Exception as e:
+            project_name = published_file['project_name']
+            print(f"  ERROR: Failed to send email for {project_name}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    print(f"\n{'='*50}")
+    print(f"Total email notifications sent: {emails_sent}/{len(published_files)}")
+    print(f"{'='*50}")
+
     # Summary
     print("\n" + "="*50)
     print("FINAL SUMMARY")
@@ -919,6 +1113,7 @@ def main():
     print(f"Total zip files created: {len(project_zips)}")
     print(f"Total zip files uploaded: {len(uploaded_zips)}")
     print(f"Total files published to LabLink: {len(published_files)}")
+    print(f"Total email notifications sent: {emails_sent}")
 
     print("\nDetails:")
     for zip_info in uploaded_zips:
@@ -933,6 +1128,8 @@ def main():
         print(f"    File LIMS ID: {file_limsid}")
         published = any(p['file_limsid'] == file_limsid for p in published_files)
         print(f"    Published to LabLink: {'Yes' if published else 'No'}")
+        email_sent = project_limsid in emailed_projects
+        print(f"    Email notification sent: {'Yes' if email_sent else 'No'}")
 
     myZIP.close()
 

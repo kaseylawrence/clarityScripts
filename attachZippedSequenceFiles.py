@@ -698,21 +698,31 @@ def publish_files_to_lablink(api, uploaded_zips):
 
         try:
             # Get the file XML to modify it
+            print(f"\n  === STEP 1: GET FILE XML ===")
             print(f"  DEBUG: Fetching file XML from {file_uri}")
             file_response = api.GET(file_uri)
             file_root = ET.fromstring(file_response)
             print(f"  DEBUG: Successfully parsed file XML")
             print(f"  DEBUG: Root tag: {file_root.tag}")
 
+            # Print the original XML
+            print(f"\n  --- Original File XML (first 1000 chars) ---")
+            original_xml_str = ET.tostring(file_root, encoding='unicode')
+            print(original_xml_str[:1000])
+            if len(original_xml_str) > 1000:
+                print(f"  ... (truncated, total length: {len(original_xml_str)} chars)")
+
             # Check current is-published status
             current_pub = file_root.find('.//is-published')
             if current_pub is not None:
                 current_status = current_pub.text
-                print(f"  DEBUG: Current is-published value: {current_status}")
+                print(f"\n  DEBUG: Current is-published value: '{current_status}'")
             else:
-                print(f"  DEBUG: No is-published element found in current XML")
+                print(f"\n  DEBUG: No is-published element found in current XML")
 
             # Add or update the is-published element
+            print(f"\n  === STEP 2: MODIFY XML ===")
+
             # First, remove any existing is-published element
             removed_count = 0
             for elem in file_root.findall('.//is-published'):
@@ -727,42 +737,79 @@ def publish_files_to_lablink(api, uploaded_zips):
             # Add is-published element set to true
             if namespace:
                 is_published = ET.Element(f'{{{namespace}}}is-published')
-                print(f"  DEBUG: Created is-published element with namespace")
+                print(f"  DEBUG: Created is-published element with namespace: {namespace}")
             else:
                 is_published = ET.Element('is-published')
                 print(f"  DEBUG: Created is-published element without namespace")
 
             is_published.text = 'true'
             file_root.append(is_published)
+            print(f"  DEBUG: Set is-published.text = 'true'")
             print(f"  DEBUG: Appended is-published element to root")
 
             # Convert back to XML string
             updated_xml = ET.tostring(file_root, encoding='utf-8')
             print(f"  DEBUG: Converted to XML ({len(updated_xml)} bytes)")
 
+            # Print the modified XML that will be sent
+            print(f"\n  === STEP 3: PUT REQUEST PAYLOAD ===")
+            print(f"  --- Modified File XML for PUT (first 1500 chars) ---")
+            updated_xml_str = updated_xml.decode('utf-8')
+            print(updated_xml_str[:1500])
+            if len(updated_xml_str) > 1500:
+                print(f"  ... (truncated, total length: {len(updated_xml_str)} chars)")
+
+            # Show just the is-published element area
+            print(f"\n  --- Looking for is-published in payload ---")
+            if '<is-published>' in updated_xml_str:
+                start_idx = updated_xml_str.find('<is-published>')
+                end_idx = updated_xml_str.find('</is-published>') + len('</is-published>')
+                print(f"  Found: {updated_xml_str[start_idx:end_idx]}")
+            else:
+                print(f"  WARNING: '<is-published>' not found in payload!")
+
             # PUT the updated file back
-            print(f"  DEBUG: Sending PUT request to {file_uri}")
+            print(f"\n  === STEP 4: SEND PUT REQUEST ===")
+            print(f"  DEBUG: PUT URL: {file_uri}")
+            print(f"  DEBUG: Payload size: {len(updated_xml)} bytes")
+            print(f"  DEBUG: Sending PUT request...")
+
             publish_response = api.PUT(updated_xml, file_uri)
-            print(f"  DEBUG: PUT request completed")
+            print(f"  DEBUG: PUT request completed, received response")
 
             # Verify the response
+            print(f"\n  === STEP 5: PARSE PUT RESPONSE ===")
             publish_root = ET.fromstring(publish_response)
             print(f"  DEBUG: Successfully parsed PUT response")
             print(f"  DEBUG: Response root tag: {publish_root.tag}")
 
+            # Print the response XML
+            print(f"\n  --- PUT Response XML (first 1500 chars) ---")
+            response_str = ET.tostring(publish_root, encoding='unicode')
+            print(response_str[:1500])
+            if len(response_str) > 1500:
+                print(f"  ... (truncated, total length: {len(response_str)} chars)")
+
             # Check for errors in response
             if 'exception' in publish_root.tag:
+                print(f"\n  ERROR: Response is an exception!")
                 error_msg_elem = publish_root.find('.//{http://genologics.com/ri/exception}message')
                 if error_msg_elem is None:
                     error_msg_elem = publish_root.find('.//message')
                 error_msg = error_msg_elem.text if error_msg_elem is not None else "Unknown error"
                 print(f"  ERROR: API returned exception: {error_msg}")
+
+                # Print full exception XML
+                print(f"\n  --- Full Exception XML ---")
+                print(ET.tostring(publish_root, encoding='unicode'))
                 continue
 
+            # Check the is-published value in response
+            print(f"\n  === STEP 6: VERIFY PUBLICATION ===")
             is_pub_elem = publish_root.find('.//is-published')
             if is_pub_elem is not None:
                 pub_value = is_pub_elem.text
-                print(f"  DEBUG: Response is-published value: {pub_value}")
+                print(f"  DEBUG: Response is-published value: '{pub_value}'")
 
                 if pub_value == 'true':
                     print(f"  ✓ Successfully published to LabLink")
@@ -773,19 +820,23 @@ def publish_files_to_lablink(api, uploaded_zips):
                         'zip_filename': zip_info['zip_filename']
                     })
                 else:
-                    print(f"  ⚠ Published but is-published = {pub_value} (expected 'true')")
+                    print(f"  ⚠ Published but is-published = '{pub_value}' (expected 'true')")
             else:
                 print(f"  ⚠ Published but no is-published element in response")
-                # Print the response XML for debugging
-                response_str = ET.tostring(publish_root, encoding='unicode')
-                print(f"  DEBUG: Response XML: {response_str[:500]}")
+                print(f"  DEBUG: Searching for is-published in response XML...")
+                if '<is-published>' in response_str:
+                    print(f"  DEBUG: Found '<is-published>' in string but not via find()")
+                else:
+                    print(f"  DEBUG: '<is-published>' not found in response at all")
 
         except Exception as e:
-            print(f"  ✗ Failed to publish: {e}")
+            print(f"\n  ✗ EXCEPTION during publish: {e}")
             import traceback
             traceback.print_exc()
 
-    print(f"\nDEBUG: Total files successfully published: {len(published_files)}")
+    print(f"\n{'='*50}")
+    print(f"DEBUG: Total files successfully published: {len(published_files)}")
+    print(f"{'='*50}")
     return published_files
 
 

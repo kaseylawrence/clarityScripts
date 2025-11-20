@@ -1,0 +1,6 @@
+Dear {{ researcher_firstName }},
+
+Your project {{ project_name }} submission has been received.
+
+Thank you,
+Clarity LIMS Team

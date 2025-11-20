@@ -740,29 +740,28 @@ def publish_files_to_lablink(api, uploaded_zips):
             # Add or update the is-published element
             print(f"\n  === STEP 2: MODIFY XML ===")
 
-            # First, remove any existing is-published element
-            removed_count = 0
-            for elem in file_root.findall('.//is-published'):
-                file_root.remove(elem)
-                removed_count += 1
-            print(f"  DEBUG: Removed {removed_count} existing is-published elements")
+            # Find the is-published element (checking both with and without namespace)
+            is_published_elem = file_root.find('.//is-published')
 
-            # Create namespace map
-            namespace = file_root.tag.split('}')[0].strip('{') if '}' in file_root.tag else None
-            print(f"  DEBUG: Namespace: {namespace}")
+            # Also try with the namespace
+            if is_published_elem is None:
+                namespace = file_root.tag.split('}')[0].strip('{') if '}' in file_root.tag else None
+                if namespace:
+                    is_published_elem = file_root.find('.//{%s}is-published' % namespace)
 
-            # Add is-published element set to true
-            if namespace:
-                is_published = ET.Element(f'{{{namespace}}}is-published')
-                print(f"  DEBUG: Created is-published element with namespace: {namespace}")
+            if is_published_elem is not None:
+                # Element exists, just change its text value
+                old_value = is_published_elem.text
+                is_published_elem.text = 'true'
+                print(f"  DEBUG: Found existing is-published element with value '{old_value}'")
+                print(f"  DEBUG: Changed is-published text from '{old_value}' to 'true'")
             else:
-                is_published = ET.Element('is-published')
-                print(f"  DEBUG: Created is-published element without namespace")
-
-            is_published.text = 'true'
-            file_root.append(is_published)
-            print(f"  DEBUG: Set is-published.text = 'true'")
-            print(f"  DEBUG: Appended is-published element to root")
+                # Element doesn't exist, create it WITHOUT namespace prefix
+                print(f"  DEBUG: No is-published element found, creating new one")
+                is_published_elem = ET.Element('is-published')
+                is_published_elem.text = 'true'
+                file_root.append(is_published_elem)
+                print(f"  DEBUG: Created and appended new is-published element (no namespace prefix)")
 
             # Convert back to XML string
             updated_xml = ET.tostring(file_root, encoding='utf-8')

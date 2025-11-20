@@ -221,16 +221,20 @@ def match_artifacts_to_files(api, artifacts, ab1_files):
         project_info = get_project_from_artifact(api, data['input_uri'])
         if project_info:
             data['project'] = project_info
-            print(f"  {data['artifact_name'].ljust(20)} -> Project: {project_info['project_name']}")
+            artifact_name_padded = data['artifact_name'].ljust(20)
+            project_name = project_info['project_name']
+            print(f"  {artifact_name_padded} -> Project: {project_name}")
 
     print(f"\nDeduplicating: {len(artifacts)} total mappings -> {len(unique_artifacts)} unique inputs")
     print("\nArtifacts to match:")
     for input_limsid, data in unique_artifacts.items():
-        print(f"  {data['artifact_name']}")
+        artifact_name = data['artifact_name']
+        print(f"  {artifact_name}")
 
     print("\nFiles to match:")
     for filename in ab1_files.keys():
-        print(f"  {os.path.basename(filename)}")
+        base_filename = os.path.basename(filename)
+        print(f"  {base_filename}")
 
     matches = []
     unmatched_files = list(ab1_files.keys())
@@ -265,14 +269,18 @@ def match_artifacts_to_files(api, artifacts, ab1_files):
         if matched_file:
             if matched_file in unmatched_files:
                 unmatched_files.remove(matched_file)
-            print(f"✓ {artifact_name.ljust(20)} -> {os.path.basename(matched_file)}")
+            artifact_name_padded = artifact_name.ljust(20)
+            base_filename = os.path.basename(matched_file)
+            print(f"✓ {artifact_name_padded} -> {base_filename}")
         else:
-            print(f"✗ {artifact_name.ljust(20)} -> NO MATCH")
+            artifact_name_padded = artifact_name.ljust(20)
+            print(f"✗ {artifact_name_padded} -> NO MATCH")
 
     if unmatched_files:
         print(f"\n⚠ Unmatched files:")
         for filename in unmatched_files:
-            print(f"  - {os.path.basename(filename)}")
+            base_filename = os.path.basename(filename)
+            print(f"  - {base_filename}")
 
     return matches
 
@@ -396,7 +404,8 @@ def upload_file_to_artifact(api, artifact_uri, file_data, filename, username, pa
 
     if content_location_elem is None or content_location_elem.text is None:
         print(f"  ERROR: No content-location in storage response")
-        print(f"  Response: {storage_response.decode('utf-8')}")
+        response_text = storage_response.decode('utf-8')
+        print(f"  Response: {response_text}")
         return None, None
 
     content_location = content_location_elem.text
@@ -447,8 +456,10 @@ def upload_file_to_artifact(api, artifact_uri, file_data, filename, username, pa
     if upload_response.status_code == 200 or upload_response.status_code == 201:
         print(f"  ✓ File uploaded successfully")
     else:
-        print(f"  ⚠ Upload status: {upload_response.status_code}")
-        print(f"  Response: {upload_response.text}")
+        status_code = upload_response.status_code
+        response_text = upload_response.text
+        print(f"  ⚠ Upload status: {status_code}")
+        print(f"  Response: {response_text}")
 
     return file_limsid, file_uri
 
@@ -490,7 +501,8 @@ def upload_file_to_project(api, project_uri, file_data, filename, username, pass
 
     if content_location_elem is None or content_location_elem.text is None:
         print(f"  ERROR: No content-location in storage response")
-        print(f"  Response: {storage_response.decode('utf-8')}")
+        response_text = storage_response.decode('utf-8')
+        print(f"  Response: {response_text}")
         return None, None
 
     content_location = content_location_elem.text
@@ -538,8 +550,10 @@ def upload_file_to_project(api, project_uri, file_data, filename, username, pass
     if upload_response.status_code == 200 or upload_response.status_code == 201:
         print(f"  ✓ File uploaded successfully")
     else:
-        print(f"  ⚠ Upload status: {upload_response.status_code}")
-        print(f"  Response: {upload_response.text}")
+        status_code = upload_response.status_code
+        response_text = upload_response.text
+        print(f"  ⚠ Upload status: {status_code}")
+        print(f"  Response: {response_text}")
 
     return file_limsid, file_uri
 
@@ -614,7 +628,8 @@ def publish_files_to_lablink(api, uploaded_zips):
         file_uri = zip_info['file_uri']
 
         print(f"\nPublishing file for project: {project_name} ({project_limsid})")
-        print(f"  File: {zip_info['zip_filename']}")
+        zip_filename = zip_info['zip_filename']
+        print(f"  File: {zip_filename}")
 
         try:
             # Get the file XML to modify it
@@ -706,7 +721,9 @@ def main():
 
     print(f"\nFound {len(projects)} project(s) with files:")
     for project_limsid, project_data in projects.items():
-        print(f"  {project_data['project_name']} ({project_limsid}): {len(project_data['files'])} file(s)")
+        project_name = project_data['project_name']
+        file_count = len(project_data['files'])
+        print(f"  {project_name} ({project_limsid}): {file_count} file(s)")
 
     # Create zip files for each project
     project_zips = create_project_zip_files(projects)
@@ -728,11 +745,16 @@ def main():
 
     print("\nDetails:")
     for zip_info in uploaded_zips:
-        print(f"\n  Project: {zip_info['project_name']} ({zip_info['project_limsid']})")
-        print(f"    Zip file: {zip_info['zip_filename']}")
-        print(f"    Files in zip: {zip_info['file_count']}")
-        print(f"    File LIMS ID: {zip_info['file_limsid']}")
-        published = any(p['file_limsid'] == zip_info['file_limsid'] for p in published_files)
+        project_name = zip_info['project_name']
+        project_limsid = zip_info['project_limsid']
+        zip_filename = zip_info['zip_filename']
+        file_count = zip_info['file_count']
+        file_limsid = zip_info['file_limsid']
+        print(f"\n  Project: {project_name} ({project_limsid})")
+        print(f"    Zip file: {zip_filename}")
+        print(f"    Files in zip: {file_count}")
+        print(f"    File LIMS ID: {file_limsid}")
+        published = any(p['file_limsid'] == file_limsid for p in published_files)
         print(f"    Published to LabLink: {'Yes' if published else 'No'}")
 
     myZIP.close()

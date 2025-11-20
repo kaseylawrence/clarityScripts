@@ -97,26 +97,37 @@ def interact_with_ab1_files(zip_file):
 
 def get_step_artifacts(api, stepURI):
     """Get all input-output mappings from the step."""
+    print(f"DEBUG: Getting step artifacts from: {stepURI}/details")
+
     step_response = api.GET(f'{stepURI}/details')
     details_root = ET.fromstring(step_response)
+    print(f"DEBUG: Successfully retrieved step details XML")
 
     artifacts = []
 
-    for io_artifacts in details_root.findall('.//input-output-map'):
+    io_maps = details_root.findall('.//input-output-map')
+    print(f"DEBUG: Found {len(io_maps)} input-output mappings")
+
+    for io_artifacts in io_maps:
         resultFile = io_artifacts.find('output')
         input_elem = io_artifacts.find('input')
 
         if input_elem is not None and resultFile is not None:
+            input_uri = input_elem.get('uri')
+            artifact_name = get_artifact_name(api, input_uri)
+
             mapping = {
                 'input_limsid': input_elem.get('limsid'),
-                'input_uri': input_elem.get('uri'),
+                'input_uri': input_uri,
                 'output_limsid': resultFile.get('limsid'),
                 'output_uri': resultFile.get('uri'),
                 'output_generation_type': resultFile.get('output-generation-type'),
-                'artifact_name': get_artifact_name(api, input_elem.get('uri'))
+                'artifact_name': artifact_name
             }
             artifacts.append(mapping)
+            print(f"DEBUG: Mapped artifact: {artifact_name} ({mapping['input_limsid']}) -> {mapping['output_limsid']}")
 
+    print(f"DEBUG: Total artifacts collected: {len(artifacts)}")
     return artifacts
 
 
@@ -130,56 +141,74 @@ def get_artifact_name(api, artifactURI):
 
 def get_project_from_artifact(api, artifactURI):
     """Get the project information from an artifact via its samples."""
-    # Get the artifact
-    artifact_response = api.GET(artifactURI)
-    artifact_root = ET.fromstring(artifact_response)
+    print(f"  DEBUG: Getting project info for artifact: {artifactURI}")
 
-    # Find the sample elements in the artifact
-    # Namespace for artifacts
-    namespaces = {
-        'art': 'http://genologics.com/ri/artifact',
-        'udf': 'http://genologics.com/ri/userdefined'
-    }
+    try:
+        # Get the artifact
+        artifact_response = api.GET(artifactURI)
+        artifact_root = ET.fromstring(artifact_response)
+        print(f"  DEBUG: Successfully retrieved artifact XML")
 
-    # Look for sample elements
-    sample_elem = artifact_root.find('.//sample', namespaces)
-    if sample_elem is None:
-        sample_elem = artifact_root.find('.//sample')
+        # Find the sample elements in the artifact
+        # Namespace for artifacts
+        namespaces = {
+            'art': 'http://genologics.com/ri/artifact',
+            'udf': 'http://genologics.com/ri/userdefined'
+        }
 
-    if sample_elem is None:
-        print(f"  Warning: No sample found for artifact {artifactURI}")
-        return None, None
+        # Look for sample elements
+        sample_elem = artifact_root.find('.//sample', namespaces)
+        if sample_elem is None:
+            sample_elem = artifact_root.find('.//sample')
 
-    sample_uri = sample_elem.get('uri')
-    if not sample_uri:
-        print(f"  Warning: No sample URI found")
-        return None, None
+        if sample_elem is None:
+            print(f"  WARNING: No sample found for artifact {artifactURI}")
+            return None
 
-    # Get the sample to find its project
-    sample_response = api.GET(sample_uri)
-    sample_root = ET.fromstring(sample_response)
+        sample_uri = sample_elem.get('uri')
+        if not sample_uri:
+            print(f"  WARNING: No sample URI found")
+            return None
 
-    # Find the project element
-    project_elem = sample_root.find('.//project')
-    if project_elem is None:
-        print(f"  Warning: No project found for sample {sample_uri}")
-        return None, None
+        print(f"  DEBUG: Found sample URI: {sample_uri}")
 
-    project_uri = project_elem.get('uri')
-    project_limsid = project_elem.get('limsid')
+        # Get the sample to find its project
+        sample_response = api.GET(sample_uri)
+        sample_root = ET.fromstring(sample_response)
+        print(f"  DEBUG: Successfully retrieved sample XML")
 
-    # Get project details to get the name
-    project_response = api.GET(project_uri)
-    project_root = ET.fromstring(project_response)
+        # Find the project element
+        project_elem = sample_root.find('.//project')
+        if project_elem is None:
+            print(f"  WARNING: No project found for sample {sample_uri}")
+            return None
 
-    project_name_elem = project_root.find('.//name')
-    project_name = project_name_elem.text if project_name_elem is not None else project_limsid
+        project_uri = project_elem.get('uri')
+        project_limsid = project_elem.get('limsid')
+        print(f"  DEBUG: Found project - URI: {project_uri}, LIMS ID: {project_limsid}")
 
-    return {
-        'project_name': project_name,
-        'project_limsid': project_limsid,
-        'project_uri': project_uri
-    }
+        # Get project details to get the name
+        project_response = api.GET(project_uri)
+        project_root = ET.fromstring(project_response)
+        print(f"  DEBUG: Successfully retrieved project XML")
+
+        project_name_elem = project_root.find('.//name')
+        project_name = project_name_elem.text if project_name_elem is not None else project_limsid
+        print(f"  DEBUG: Project name: {project_name}")
+
+        result = {
+            'project_name': project_name,
+            'project_limsid': project_limsid,
+            'project_uri': project_uri
+        }
+        print(f"  DEBUG: Returning project info dictionary")
+        return result
+
+    except Exception as e:
+        print(f"  ERROR: Exception in get_project_from_artifact: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 def match_artifacts_to_files(api, artifacts, ab1_files):
@@ -217,13 +246,27 @@ def match_artifacts_to_files(api, artifacts, ab1_files):
 
     # Get project information for each artifact
     print("\nGetting project information for artifacts...")
+    print(f"DEBUG: Processing {len(unique_artifacts)} unique artifacts")
+
     for input_limsid, data in unique_artifacts.items():
-        project_info = get_project_from_artifact(api, data['input_uri'])
-        if project_info:
+        artifact_name = data['artifact_name']
+        artifact_uri = data['input_uri']
+        print(f"\nDEBUG: Processing artifact: {artifact_name} (LIMS ID: {input_limsid})")
+        print(f"DEBUG: Artifact URI: {artifact_uri}")
+
+        project_info = get_project_from_artifact(api, artifact_uri)
+
+        print(f"DEBUG: project_info type: {type(project_info)}")
+        print(f"DEBUG: project_info value: {project_info}")
+
+        if project_info is not None:
             data['project'] = project_info
-            artifact_name_padded = data['artifact_name'].ljust(20)
+            artifact_name_padded = artifact_name.ljust(20)
             project_name = project_info['project_name']
-            print(f"  {artifact_name_padded} -> Project: {project_name}")
+            print(f"  SUCCESS: {artifact_name_padded} -> Project: {project_name}")
+        else:
+            print(f"  WARNING: Could not get project info for {artifact_name}")
+            data['project'] = None
 
     print(f"\nDeduplicating: {len(artifacts)} total mappings -> {len(unique_artifacts)} unique inputs")
     print("\nArtifacts to match:")
@@ -290,30 +333,50 @@ def group_matches_by_project(matches):
     Group matched files by project and create zip files for each project.
     Returns a dict mapping project_limsid to project info and file list.
     """
+    print(f"DEBUG: Grouping {len(matches)} matches by project")
     projects = {}
 
     for match in matches:
+        artifact_name = match['artifact_name']
+        has_file = bool(match['matched_file'])
+        has_data = bool(match['file_data'])
+        has_project = bool(match['project'])
+
+        print(f"DEBUG: Match for {artifact_name}: file={has_file}, data={has_data}, project={has_project}")
+
         # Only process matches that have files and project info
         if not match['matched_file'] or not match['file_data'] or not match['project']:
+            print(f"DEBUG: Skipping {artifact_name} - missing required data")
             continue
 
         project_limsid = match['project']['project_limsid']
+        project_name = match['project']['project_name']
+        print(f"DEBUG: Adding {artifact_name} to project {project_name} ({project_limsid})")
 
         if project_limsid not in projects:
             projects[project_limsid] = {
-                'project_name': match['project']['project_name'],
+                'project_name': project_name,
                 'project_limsid': project_limsid,
                 'project_uri': match['project']['project_uri'],
                 'files': []
             }
+            print(f"DEBUG: Created new project group for {project_name}")
 
         # Add file to this project's list
+        filename = os.path.basename(match['matched_file'])
         projects[project_limsid]['files'].append({
-            'filename': os.path.basename(match['matched_file']),
+            'filename': filename,
             'file_data': match['file_data'],
-            'artifact_name': match['artifact_name'],
+            'artifact_name': artifact_name,
             'input_limsid': match['input_limsid']
         })
+        print(f"DEBUG: Added file {filename} to project {project_name}")
+
+    print(f"DEBUG: Total projects with files: {len(projects)}")
+    for proj_id, proj_data in projects.items():
+        proj_name = proj_data['project_name']
+        file_count = len(proj_data['files'])
+        print(f"DEBUG: Project {proj_name} ({proj_id}): {file_count} files")
 
     return projects
 

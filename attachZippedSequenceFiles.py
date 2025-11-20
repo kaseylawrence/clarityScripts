@@ -684,9 +684,10 @@ def publish_files_to_lablink(api, uploaded_zips):
 
     published_files = []
 
-    # Create a debug log file
-    import tempfile
-    debug_log_path = tempfile.mktemp(prefix='lablink_publish_debug_', suffix='.log')
+    # Create a debug log file in the sanger directory
+    import datetime
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    debug_log_path = f'/opt/gls/clarity/customextensions/sanger/lablink_publish_debug_{timestamp}.log'
     print(f"\nDEBUG LOG FILE: {debug_log_path}")
 
     for zip_info in uploaded_zips:

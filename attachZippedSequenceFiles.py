@@ -221,7 +221,7 @@ def match_artifacts_to_files(api, artifacts, ab1_files):
         project_info = get_project_from_artifact(api, data['input_uri'])
         if project_info:
             data['project'] = project_info
-            print(f"  {data['artifact_name']:20s} -> Project: {project_info['project_name']}")
+            print(f"  {data['artifact_name'].ljust(20)} -> Project: {project_info['project_name']}")
 
     print(f"\nDeduplicating: {len(artifacts)} total mappings -> {len(unique_artifacts)} unique inputs")
     print("\nArtifacts to match:")
@@ -265,9 +265,9 @@ def match_artifacts_to_files(api, artifacts, ab1_files):
         if matched_file:
             if matched_file in unmatched_files:
                 unmatched_files.remove(matched_file)
-            print(f"✓ {artifact_name:20s} -> {os.path.basename(matched_file)}")
+            print(f"✓ {artifact_name.ljust(20)} -> {os.path.basename(matched_file)}")
         else:
-            print(f"✗ {artifact_name:20s} -> NO MATCH")
+            print(f"✗ {artifact_name.ljust(20)} -> NO MATCH")
 
     if unmatched_files:
         print(f"\n⚠ Unmatched files:")

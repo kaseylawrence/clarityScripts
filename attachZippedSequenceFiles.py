@@ -684,6 +684,11 @@ def publish_files_to_lablink(api, uploaded_zips):
 
     published_files = []
 
+    # Create a debug log file
+    import tempfile
+    debug_log_path = tempfile.mktemp(prefix='lablink_publish_debug_', suffix='.log')
+    print(f"\nDEBUG LOG FILE: {debug_log_path}")
+
     for zip_info in uploaded_zips:
         project_name = zip_info['project_name']
         project_limsid = zip_info['project_limsid']
@@ -697,6 +702,14 @@ def publish_files_to_lablink(api, uploaded_zips):
         print(f"  DEBUG: File LIMS ID: {file_limsid}")
 
         try:
+            with open(debug_log_path, 'a') as debug_log:
+                debug_log.write(f"\n{'='*80}\n")
+                debug_log.write(f"Publishing: {project_name} ({project_limsid})\n")
+                debug_log.write(f"File: {zip_filename}\n")
+                debug_log.write(f"File URI: {file_uri}\n")
+                debug_log.write(f"File LIMS ID: {file_limsid}\n")
+                debug_log.write(f"{'='*80}\n\n")
+
             # Get the file XML to modify it
             print(f"\n  === STEP 1: GET FILE XML ===")
             print(f"  DEBUG: Fetching file XML from {file_uri}")
@@ -705,12 +718,15 @@ def publish_files_to_lablink(api, uploaded_zips):
             print(f"  DEBUG: Successfully parsed file XML")
             print(f"  DEBUG: Root tag: {file_root.tag}")
 
-            # Print the original XML
-            print(f"\n  --- Original File XML (first 1000 chars) ---")
+            # Write original XML to debug log
             original_xml_str = ET.tostring(file_root, encoding='unicode')
-            print(original_xml_str[:1000])
-            if len(original_xml_str) > 1000:
-                print(f"  ... (truncated, total length: {len(original_xml_str)} chars)")
+            with open(debug_log_path, 'a') as debug_log:
+                debug_log.write("STEP 1: ORIGINAL FILE XML\n")
+                debug_log.write("-" * 80 + "\n")
+                debug_log.write(original_xml_str)
+                debug_log.write("\n" + "-" * 80 + "\n\n")
+
+            print(f"  (Original XML written to debug log, length: {len(original_xml_str)} chars)")
 
             # Check current is-published status
             current_pub = file_root.find('.//is-published')
@@ -751,20 +767,22 @@ def publish_files_to_lablink(api, uploaded_zips):
             updated_xml = ET.tostring(file_root, encoding='utf-8')
             print(f"  DEBUG: Converted to XML ({len(updated_xml)} bytes)")
 
-            # Print the modified XML that will be sent
-            print(f"\n  === STEP 3: PUT REQUEST PAYLOAD ===")
-            print(f"  --- Modified File XML for PUT (first 1500 chars) ---")
+            # Write modified XML to debug log
             updated_xml_str = updated_xml.decode('utf-8')
-            print(updated_xml_str[:1500])
-            if len(updated_xml_str) > 1500:
-                print(f"  ... (truncated, total length: {len(updated_xml_str)} chars)")
+            with open(debug_log_path, 'a') as debug_log:
+                debug_log.write("STEP 3: MODIFIED XML FOR PUT REQUEST\n")
+                debug_log.write("-" * 80 + "\n")
+                debug_log.write(updated_xml_str)
+                debug_log.write("\n" + "-" * 80 + "\n\n")
 
-            # Show just the is-published element area
-            print(f"\n  --- Looking for is-published in payload ---")
+            print(f"  (Modified XML written to debug log, length: {len(updated_xml_str)} chars)")
+
+            # Show just the is-published element
             if '<is-published>' in updated_xml_str:
                 start_idx = updated_xml_str.find('<is-published>')
                 end_idx = updated_xml_str.find('</is-published>') + len('</is-published>')
-                print(f"  Found: {updated_xml_str[start_idx:end_idx]}")
+                is_pub_snippet = updated_xml_str[start_idx:end_idx]
+                print(f"  is-published in payload: {is_pub_snippet}")
             else:
                 print(f"  WARNING: '<is-published>' not found in payload!")
 
@@ -783,12 +801,15 @@ def publish_files_to_lablink(api, uploaded_zips):
             print(f"  DEBUG: Successfully parsed PUT response")
             print(f"  DEBUG: Response root tag: {publish_root.tag}")
 
-            # Print the response XML
-            print(f"\n  --- PUT Response XML (first 1500 chars) ---")
+            # Write response XML to debug log
             response_str = ET.tostring(publish_root, encoding='unicode')
-            print(response_str[:1500])
-            if len(response_str) > 1500:
-                print(f"  ... (truncated, total length: {len(response_str)} chars)")
+            with open(debug_log_path, 'a') as debug_log:
+                debug_log.write("STEP 5: PUT RESPONSE XML\n")
+                debug_log.write("-" * 80 + "\n")
+                debug_log.write(response_str)
+                debug_log.write("\n" + "-" * 80 + "\n\n")
+
+            print(f"  (Response XML written to debug log, length: {len(response_str)} chars)")
 
             # Check for errors in response
             if 'exception' in publish_root.tag:
@@ -798,10 +819,7 @@ def publish_files_to_lablink(api, uploaded_zips):
                     error_msg_elem = publish_root.find('.//message')
                 error_msg = error_msg_elem.text if error_msg_elem is not None else "Unknown error"
                 print(f"  ERROR: API returned exception: {error_msg}")
-
-                # Print full exception XML
-                print(f"\n  --- Full Exception XML ---")
-                print(ET.tostring(publish_root, encoding='unicode'))
+                print(f"  (Full exception XML in debug log: {debug_log_path})")
                 continue
 
             # Check the is-published value in response
@@ -823,19 +841,20 @@ def publish_files_to_lablink(api, uploaded_zips):
                     print(f"  ⚠ Published but is-published = '{pub_value}' (expected 'true')")
             else:
                 print(f"  ⚠ Published but no is-published element in response")
-                print(f"  DEBUG: Searching for is-published in response XML...")
-                if '<is-published>' in response_str:
-                    print(f"  DEBUG: Found '<is-published>' in string but not via find()")
-                else:
-                    print(f"  DEBUG: '<is-published>' not found in response at all")
+                print(f"  (Check debug log for full response XML: {debug_log_path})")
 
         except Exception as e:
             print(f"\n  ✗ EXCEPTION during publish: {e}")
             import traceback
             traceback.print_exc()
+            with open(debug_log_path, 'a') as debug_log:
+                debug_log.write(f"\nEXCEPTION: {e}\n")
+                debug_log.write(traceback.format_exc())
+                debug_log.write("\n")
 
     print(f"\n{'='*50}")
     print(f"DEBUG: Total files successfully published: {len(published_files)}")
+    print(f"DEBUG LOG FILE: {debug_log_path}")
     print(f"{'='*50}")
     return published_files
 

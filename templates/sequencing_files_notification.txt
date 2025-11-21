@@ -1,0 +1,24 @@
+Sequencing Files Available
+==========================
+
+Dear Researcher,
+
+Your sequencing files for project {{ project_name }} have been processed and are now available in LabLink.
+
+Project Details:
+----------------
+Project ID: {{ project_id }}
+Files Processed: {{ file_count }}
+Zip File: {{ zip_filename }}
+
+Files Included ({{ file_count }} total):
+{% for sample_name in sample_names %}
+  - {{ sample_name }}
+{% endfor %}
+
+Your files have been published to LabLink and are ready for download.
+
+To access your files, please log in to LabLink and navigate to your project.
+
+Thank you,
+Clarity LIMS Team

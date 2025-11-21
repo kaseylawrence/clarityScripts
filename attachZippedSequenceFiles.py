@@ -998,8 +998,8 @@ def send_notification_email(api, published_file_info, projects):
         print(f"  ERROR: Could not get researcher email, skipping notification")
         return False
 
-    # Get sample names from project files
-    sample_names = [f['artifact_name'] for f in project_data['files']]
+    # Get filenames from project files (with extensions)
+    file_names = [f['filename'] for f in project_data['files']]
 
     # Read email templates
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1022,7 +1022,7 @@ def send_notification_email(api, published_file_info, projects):
         'project_id': project_limsid,
         'file_count': file_count,
         'zip_filename': zip_filename,
-        'sample_names': sample_names
+        'sample_names': file_names  # Full filenames with extensions
     }
 
     try:

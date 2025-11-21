@@ -1,14 +1,17 @@
 # File-to-Sample Association Logic
 
 ## Overview
-The `attachZippedSequenceFiles.py` script associates .ab1 sequence files from a zip archive with samples in Clarity LIMS using a multi-step process.
+The `attachZippedSequenceFiles.py` script associates sequence files from a zip archive with samples in Clarity LIMS using a multi-step process. Files are matched by their base name (ignoring extensions), allowing related files (.ab1, .txt, .seq, etc.) to travel together.
 
 ## Step-by-Step Process
 
 ### 1. Extract Files from Zip Archive
 - Script downloads the "Zipped Run Folder" attached to the workflow step
-- Extracts all .ab1 files from the zip (ignoring directories and __MACOSX files)
+- Extracts **ALL files** from the zip (ignoring directories and __MACOSX files)
+- Groups files by their base name (without extension)
 - Stores file data in memory with original filenames
+- Example grouping:
+  - `Sample123.ab1`, `Sample123.txt`, `Sample123.seq` → grouped as "Sample123"
 
 ### 2. Get Step Artifacts
 ```python
@@ -32,38 +35,41 @@ For each input artifact:
 
 ### 4. Match Files to Artifacts
 ```python
-def match_artifacts_to_files(api, artifacts, ab1_files)
+def match_artifacts_to_files(api, artifacts, files_by_basename)
 ```
 
-**Matching Algorithm** (line 294-297):
+**Matching Algorithm** (by base name, ignoring extensions):
 ```python
-# Check if artifact name appears in filename (case insensitive)
-if artifact_name.upper() in base_filename.upper():
-    matched_file = filename
+# Check if artifact name appears in base name (case insensitive)
+if artifact_name.upper() in basename.upper():
+    matched_basename = basename
+    matched_files = file_list  # All files with this base name
     break
 ```
 
 **How it works:**
-- Compares each artifact's name with each .ab1 filename
-- **Case-insensitive substring matching**: If the artifact name appears anywhere in the filename, it's a match
-- Takes the **first match** found for each artifact
+- Compares each artifact's name with file group base names (without extensions)
+- **Case-insensitive substring matching**: If the artifact name appears anywhere in the base name, it's a match
+- Takes the **first matching file group** for each artifact
+- **All files** with the matching base name are associated (e.g., .ab1, .txt, .seq)
 
 **Example Matches:**
 ```
 Artifact Name: "Sample123"
-Filename: "Sample123_A01.ab1"  ✓ MATCH (artifact name is substring of filename)
+File Group: "Sample123" (.ab1, .txt, .seq)  ✓ MATCH (all 3 files associated)
 
 Artifact Name: "ABC-001"
-Filename: "ABC-001_forward.ab1"  ✓ MATCH
+File Group: "ABC-001_forward" (.ab1, .txt)  ✓ MATCH (both files associated)
 
 Artifact Name: "Test"
-Filename: "TESTING_01.ab1"  ✓ MATCH (TEST is substring of TESTING)
+File Group: "TESTING_01" (.ab1, .seq)  ✓ MATCH (TEST is substring of TESTING)
 ```
 
 **Result:**
-- Each artifact gets associated with exactly one .ab1 file (or none if no match)
+- Each artifact gets associated with **all files** sharing the same base name (or none if no match)
+- All related files (.ab1, .txt, .seq, etc.) travel together
 - Includes the file data and project information
-- Reports unmatched files
+- Reports unmatched file groups
 
 ### 5. Group Files by Project
 ```python
@@ -71,9 +77,9 @@ def group_matches_by_project(matches)
 ```
 - Groups all matched files by their project LIMS ID
 - Each project gets a list of its associated files
+- **All file types** (.ab1, .txt, .seq, etc.) are included
 - Only includes matches that have:
-  - A matched file
-  - File data
+  - Matched files
   - Project information
 
 ### 6. Create Project Zip Files
@@ -82,7 +88,8 @@ def create_project_zip_files(projects)
 ```
 - Creates one zip file per project
 - Zip filename: `{ProjectName}_sequencing_files.zip`
-- Contains all .ab1 files for that project with original filenames preserved
+- Contains **all associated files** for that project (.ab1, .txt, .seq, etc.)
+- Original filenames are preserved
 
 ### 7. Upload to Projects
 ```python
@@ -104,16 +111,22 @@ def publish_files_to_lablink(api, uploaded_zips)
 
 ### Matching Limitations
 - **Substring matching** can cause false positives:
-  - Artifact "Test" would match "MyTest.ab1" or "Testing.ab1"
+  - Artifact "Test" would match "MyTest" or "Testing" base names
   - Solution: Ensure artifact names are unique and specific
+
+### File Extension Handling
+- **All file types** are extracted and matched by base name (ignoring extensions)
+- Files with the same base name travel together:
+  - `Sample123.ab1`, `Sample123.txt`, `Sample123.seq` all match to artifact "Sample123"
+- Common extensions: `.ab1` (chromatogram), `.txt` (text), `.seq` (sequence)
 
 ### Project Association
 - Project is determined **from the sample**, not the filename
 - All files for samples in the same project are grouped together
-- If a sample has no project, its file is skipped
+- If a sample has no project, its files are skipped
 
 ### File Naming
-- Original .ab1 filenames are preserved in the project zip files
+- Original filenames (with extensions) are preserved in the project zip files
 - Project zip filenames follow pattern: `{ProjectName}_sequencing_files.zip`
 - No file renaming occurs
 
@@ -122,19 +135,23 @@ def publish_files_to_lablink(api, uploaded_zips)
 ```
 Zipped Run Folder (attached to step)
     ↓
-Extract .ab1 files
+Extract ALL files (.ab1, .txt, .seq, etc.)
+    ↓
+Group by base name (ignore extensions)
     ↓
 Get step input artifacts ← Get artifact names
     ↓                           ↓
-Match files to artifacts  ←  Get project from sample
+Match file groups to artifacts (by base name)  ←  Get project from sample
     ↓
-Group by project
+Group all matched files by project
     ↓
-Create project zip files
+Create project zip files (all file types included)
     ↓
 Upload to projects/{limsid}
     ↓
 Publish to LabLink
+    ↓
+Send email notifications to researchers
 ```
 
 ## Debugging

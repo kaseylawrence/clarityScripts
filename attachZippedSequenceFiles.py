@@ -75,7 +75,8 @@ def downloadZip(api, fileURI):
 
 def interact_with_ab1_files(zip_file):
     """
-    Extract .ab1 files from the zip archive to memory.
+    Extract all sequence files from the zip archive to memory.
+    Groups files by their base name (without extension) to keep related files together.
     Filters out directories and __MACOSX system files.
     """
     # Get all file names, excluding directories and __MACOSX files
@@ -86,17 +87,43 @@ def interact_with_ab1_files(zip_file):
 
     print(f"\nFound {len(file_names)} actual files (excluding directories and system files)")
 
-    # Filter for .ab1 files specifically
-    ab1_files = [f for f in file_names if f.endswith('.ab1')]
-    print(f"Found {len(ab1_files)} .ab1 files")
+    # Extract all files to memory, grouped by base name (without extension)
+    files_by_basename = {}
+    all_files_data = {}
 
-    # Extract each .ab1 file to memory
-    ab1_data = {}
-    for filename in ab1_files:
+    for filename in file_names:
         file_bytes = zip_file.read(filename)
-        ab1_data[filename] = file_bytes
+        all_files_data[filename] = file_bytes
 
-    return ab1_data
+        # Get base name without extension
+        base_filename = os.path.basename(filename)
+        basename_no_ext = os.path.splitext(base_filename)[0]
+        extension = os.path.splitext(base_filename)[1]
+
+        if basename_no_ext not in files_by_basename:
+            files_by_basename[basename_no_ext] = []
+
+        files_by_basename[basename_no_ext].append({
+            'filename': filename,
+            'base_filename': base_filename,
+            'extension': extension,
+            'file_data': file_bytes
+        })
+
+    # Count file types
+    extensions_count = {}
+    for filename in file_names:
+        ext = os.path.splitext(filename)[1]
+        extensions_count[ext] = extensions_count.get(ext, 0) + 1
+
+    print(f"File types found:")
+    for ext, count in sorted(extensions_count.items()):
+        ext_display = ext if ext else "(no extension)"
+        print(f"  {ext_display}: {count} files")
+
+    print(f"Grouped into {len(files_by_basename)} unique base names")
+
+    return files_by_basename, all_files_data
 
 
 def get_step_artifacts(api, stepURI):
@@ -215,9 +242,10 @@ def get_project_from_artifact(api, artifactURI):
         return None
 
 
-def match_artifacts_to_files(api, artifacts, ab1_files):
+def match_artifacts_to_files(api, artifacts, files_by_basename):
     """
-    Match artifact names to ab1 filenames.
+    Match artifact names to file groups by base name (ignoring extensions).
+    This allows .ab1, .txt, .seq and other related files to travel together.
     Includes the PerInput output for each input and project information.
     """
     # Group by input and separate PerInput vs PerAllInputs outputs
@@ -278,26 +306,26 @@ def match_artifacts_to_files(api, artifacts, ab1_files):
         artifact_name = data['artifact_name']
         print(f"  {artifact_name}")
 
-    print("\nFiles to match:")
-    for filename in ab1_files.keys():
-        base_filename = os.path.basename(filename)
-        print(f"  {base_filename}")
+    print("\nFile groups to match (by base name):")
+    for basename, file_list in files_by_basename.items():
+        extensions = ', '.join([f['extension'] for f in file_list])
+        print(f"  {basename} ({extensions})")
 
     matches = []
-    unmatched_files = list(ab1_files.keys())
+    unmatched_basenames = set(files_by_basename.keys())
 
-    print("\n=== MATCHING ===")
+    print("\n=== MATCHING (by base name, ignoring extensions) ===")
     for input_limsid, data in unique_artifacts.items():
         artifact_name = data['artifact_name']
-        matched_file = None
+        matched_basename = None
+        matched_files = []
 
-        # Try to find matching file
-        for filename in ab1_files.keys():
-            base_filename = os.path.basename(filename)
-
-            # Check if artifact name appears in filename (case insensitive)
-            if artifact_name.upper() in base_filename.upper():
-                matched_file = filename
+        # Try to find matching file group by base name
+        for basename, file_list in files_by_basename.items():
+            # Check if artifact name appears in base name (case insensitive)
+            if artifact_name.upper() in basename.upper():
+                matched_basename = basename
+                matched_files = file_list
                 break
 
         result = {
@@ -306,28 +334,30 @@ def match_artifacts_to_files(api, artifacts, ab1_files):
             'artifact_name': artifact_name,
             'per_input_output': data['per_input_output'],
             'all_outputs': data['all_outputs'],
-            'matched_file': matched_file,
-            'file_data': ab1_files.get(matched_file) if matched_file else None,
+            'matched_basename': matched_basename,
+            'matched_files': matched_files,  # List of all files with this base name
             'project': data['project']
         }
 
         matches.append(result)
 
-        if matched_file:
-            if matched_file in unmatched_files:
-                unmatched_files.remove(matched_file)
+        if matched_files:
+            if matched_basename in unmatched_basenames:
+                unmatched_basenames.discard(matched_basename)
             artifact_name_padded = artifact_name.ljust(20)
-            base_filename = os.path.basename(matched_file)
-            print(f"✓ {artifact_name_padded} -> {base_filename}")
+            file_extensions = ', '.join([f['extension'] for f in matched_files])
+            file_count = len(matched_files)
+            print(f"✓ {artifact_name_padded} -> {matched_basename} ({file_count} files: {file_extensions})")
         else:
             artifact_name_padded = artifact_name.ljust(20)
             print(f"✗ {artifact_name_padded} -> NO MATCH")
 
-    if unmatched_files:
-        print(f"\n⚠ Unmatched files:")
-        for filename in unmatched_files:
-            base_filename = os.path.basename(filename)
-            print(f"  - {base_filename}")
+    if unmatched_basenames:
+        print(f"\n⚠ Unmatched file groups:")
+        for basename in sorted(unmatched_basenames):
+            file_list = files_by_basename[basename]
+            extensions = ', '.join([f['extension'] for f in file_list])
+            print(f"  - {basename} ({extensions})")
 
     return matches
 
@@ -335,6 +365,7 @@ def match_artifacts_to_files(api, artifacts, ab1_files):
 def group_matches_by_project(matches):
     """
     Group matched files by project and create zip files for each project.
+    Now handles multiple files per match (e.g., .ab1, .txt, .seq for same sample).
     Returns a dict mapping project_limsid to project info and file list.
     """
     print(f"DEBUG: Grouping {len(matches)} matches by project")
@@ -342,20 +373,20 @@ def group_matches_by_project(matches):
 
     for match in matches:
         artifact_name = match['artifact_name']
-        has_file = bool(match['matched_file'])
-        has_data = bool(match['file_data'])
+        has_files = bool(match['matched_files'])
         has_project = bool(match['project'])
 
-        print(f"DEBUG: Match for {artifact_name}: file={has_file}, data={has_data}, project={has_project}")
+        print(f"DEBUG: Match for {artifact_name}: files={has_files}, project={has_project}")
 
         # Only process matches that have files and project info
-        if not match['matched_file'] or not match['file_data'] or not match['project']:
+        if not match['matched_files'] or not match['project']:
             print(f"DEBUG: Skipping {artifact_name} - missing required data")
             continue
 
         project_limsid = match['project']['project_limsid']
         project_name = match['project']['project_name']
-        print(f"DEBUG: Adding {artifact_name} to project {project_name} ({project_limsid})")
+        file_count = len(match['matched_files'])
+        print(f"DEBUG: Adding {artifact_name} ({file_count} files) to project {project_name} ({project_limsid})")
 
         if project_limsid not in projects:
             projects[project_limsid] = {
@@ -366,15 +397,15 @@ def group_matches_by_project(matches):
             }
             print(f"DEBUG: Created new project group for {project_name}")
 
-        # Add file to this project's list
-        filename = os.path.basename(match['matched_file'])
-        projects[project_limsid]['files'].append({
-            'filename': filename,
-            'file_data': match['file_data'],
-            'artifact_name': artifact_name,
-            'input_limsid': match['input_limsid']
-        })
-        print(f"DEBUG: Added file {filename} to project {project_name}")
+        # Add all matched files to this project's list
+        for file_info in match['matched_files']:
+            projects[project_limsid]['files'].append({
+                'filename': file_info['base_filename'],
+                'file_data': file_info['file_data'],
+                'artifact_name': artifact_name,
+                'input_limsid': match['input_limsid']
+            })
+            print(f"DEBUG: Added file {file_info['base_filename']} to project {project_name}")
 
     print(f"DEBUG: Total projects with files: {len(projects)}")
     for proj_id, proj_data in projects.items():
@@ -1047,14 +1078,14 @@ def main():
     print(f"\nDownloading zip file...")
     myZIP = downloadZip(api, fileURI)
 
-    # Extract ab1 files
-    ab1_files = interact_with_ab1_files(myZIP)
+    # Extract all files, grouped by base name (ignoring extensions)
+    files_by_basename, all_files_data = interact_with_ab1_files(myZIP)
 
     # Get artifacts and match (now includes project info)
     print("\nGetting step artifacts...")
     stepArtifacts = get_step_artifacts(api, args.stepURI)
 
-    matches = match_artifacts_to_files(api, stepArtifacts, ab1_files)
+    matches = match_artifacts_to_files(api, stepArtifacts, files_by_basename)
 
     # Group matches by project
     print("\n" + "="*50)

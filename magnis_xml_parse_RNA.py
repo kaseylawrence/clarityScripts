@@ -171,7 +171,23 @@ def find_reagent_lot(kit_uri, lot_number):
 
         print(f"  Searching for lot number: '{lot_number}' in kit {kit_id}")
 
-        response = clarity.GET(search_uri)
+        # Wrap in try-except to handle glsapiutil3 Python 2/3 compatibility issues
+        try:
+            response = clarity.GET(search_uri)
+        except Exception as get_error:
+            # If GET fails due to glsapiutil3 error handling issues, try with requests directly
+            print(f"  Note: Using direct requests due to API utility error")
+            response_obj = requests.get(
+                search_uri,
+                auth=(args.username, args.password),
+                headers={'Accept': 'application/xml'}
+            )
+            if response_obj.status_code == 200:
+                response = response_obj.content
+            else:
+                print(f"  ✗ ERROR: Direct GET failed with status {response_obj.status_code}")
+                return None
+
         root = ET.fromstring(response)
 
         # Look for reagent-lot elements
@@ -184,8 +200,22 @@ def find_reagent_lot(kit_uri, lot_number):
 
         for lot_elem in lot_elements:
             lot_uri = lot_elem.get('uri')
+
             # Get the lot details to check lot number
-            lot_xml = clarity.GET(lot_uri)
+            try:
+                lot_xml = clarity.GET(lot_uri)
+            except Exception:
+                # Fallback to direct request
+                lot_response = requests.get(
+                    lot_uri,
+                    auth=(args.username, args.password),
+                    headers={'Accept': 'application/xml'}
+                )
+                if lot_response.status_code == 200:
+                    lot_xml = lot_response.content
+                else:
+                    continue
+
             lot_root = ET.fromstring(lot_xml)
 
             lot_num_elem = lot_root.find('.//{http://genologics.com/ri/reagentlot}lot-number')
@@ -196,7 +226,7 @@ def find_reagent_lot(kit_uri, lot_number):
                 print(f"  ✓ Found existing lot: {lot_uri}")
                 return lot_uri
 
-        print(f"  Lot number '{lot_number}' not found")
+        print(f"  Lot number '{lot_number}' not found in {len(lot_elements)} lot(s)")
         return None
 
     except Exception as e:
@@ -252,12 +282,94 @@ def create_reagent_lot(kit_uri, kit_name, lot_number, expiry_date):
             print(f"  ✓ Successfully created reagent lot: {lot_uri}")
             return lot_uri
         else:
-            print(f"  ✗ ERROR: POST failed with status {response.status_code}")
-            print(f"    Response: {response.text}")
-            return None
+            # Check if this is a duplicate lot error
+            if 'Duplicate lot' in response.text:
+                print(f"  Note: Lot already exists (duplicate detected)")
+                # Try to find the existing lot using direct search
+                return find_existing_lot_by_all_lots(kit_uri, lot_number)
+            elif 'Expiry date must be after current date' in response.text:
+                print(f"  ✗ ERROR: Expiry date {expiry_date} is in the past")
+                print(f"    Skipping this lot - it has expired")
+                return None
+            else:
+                print(f"  ✗ ERROR: POST failed with status {response.status_code}")
+                print(f"    Response: {response.text}")
+                return None
 
     except Exception as e:
         print(f"  ✗ ERROR creating reagent lot: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def find_existing_lot_by_all_lots(kit_uri, lot_number):
+    """
+    Find an existing lot by searching all lots for a kit
+    This is a fallback method when find_reagent_lot fails
+
+    Args:
+        kit_uri: URI of the reagent kit
+        lot_number: Lot number to find
+
+    Returns:
+        Reagent lot URI if found, None otherwise
+    """
+    try:
+        base_uri = str(clarity.getBaseURI())
+        kit_id = kit_uri.split('/')[-1]
+        search_uri = f"{base_uri}reagentlots?kitid={kit_id}"
+
+        print(f"  Searching all lots for kit {kit_id} to find duplicate...")
+
+        # Use direct requests to avoid glsapiutil3 issues
+        response = requests.get(
+            search_uri,
+            auth=(args.username, args.password),
+            headers={'Accept': 'application/xml'}
+        )
+
+        if response.status_code != 200:
+            print(f"  ✗ Search failed with status {response.status_code}")
+            return None
+
+        root = ET.fromstring(response.content)
+
+        # Look for reagent-lot elements
+        namespaces = {'lot': 'http://genologics.com/ri/reagentlot'}
+        lot_elements = root.findall('.//lot:reagent-lot', namespaces)
+
+        if not lot_elements:
+            lot_elements = root.findall('.//reagent-lot')
+
+        print(f"  Found {len(lot_elements)} existing lot(s) for this kit")
+
+        for lot_elem in lot_elements:
+            lot_uri = lot_elem.get('uri')
+
+            # Get lot details
+            lot_response = requests.get(
+                lot_uri,
+                auth=(args.username, args.password),
+                headers={'Accept': 'application/xml'}
+            )
+
+            if lot_response.status_code == 200:
+                lot_root = ET.fromstring(lot_response.content)
+
+                lot_num_elem = lot_root.find('.//{http://genologics.com/ri/reagentlot}lot-number')
+                if lot_num_elem is None:
+                    lot_num_elem = lot_root.find('.//lot-number')
+
+                if lot_num_elem is not None and lot_num_elem.text == lot_number:
+                    print(f"  ✓ Found duplicate lot: {lot_uri}")
+                    return lot_uri
+
+        print(f"  ✗ Could not find lot {lot_number} in existing lots")
+        return None
+
+    except Exception as e:
+        print(f"  ✗ ERROR in fallback search: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -327,10 +439,11 @@ def process_reagent_kits(labware_list):
             print(f"  ✓ Lot already exists in Clarity")
             status = 'lot_exists'
         else:
-            # Create the lot
+            # Create the lot (or find it if duplicate)
             lot_uri = create_reagent_lot(kit_uri, clarity_kit_name, lot_number, expiry_date)
             if lot_uri:
-                status = 'lot_created'
+                # Could be newly created or found after duplicate error
+                status = 'lot_ready'
             else:
                 status = 'lot_creation_failed'
 
@@ -1068,7 +1181,7 @@ def main():
         if reagent_info:
             print(f"\nReagent Lots:")
             for reagent in reagent_info:
-                status_icon = "✓" if reagent['status'] in ['lot_created', 'lot_exists'] else "⚠"
+                status_icon = "✓" if reagent['status'] in ['lot_created', 'lot_exists', 'lot_ready'] else "⚠"
                 print(f"  {status_icon} {reagent['clarity_name']}: Lot {reagent['lot_number']} (Exp: {reagent['expiry_date']}) [{reagent['status'].upper().replace('_', ' ')}]")
         
         if result['updated']:
@@ -1097,7 +1210,7 @@ def main():
         if reagent_info:
             print(f"\nReagent Lots:")
             for reagent in reagent_info:
-                status_icon = "✓" if reagent['status'] in ['lot_created', 'lot_exists'] else "⚠"
+                status_icon = "✓" if reagent['status'] in ['lot_created', 'lot_exists', 'lot_ready'] else "⚠"
                 print(f"  {status_icon} {reagent['clarity_name']}: Lot {reagent['lot_number']} (Exp: {reagent['expiry_date']}) [{reagent['status'].upper().replace('_', ' ')}]")
 
 

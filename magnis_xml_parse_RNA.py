@@ -27,6 +27,9 @@ clarity = glsapiutil3.glsapiutil3()
 # Configuration for reagent kit prefix in Clarity
 REAGENT_KIT_PREFIX = "Magnis "  # Prefix added to Magnis kit names in Clarity
 
+# Base URI cache (set after clarity.setup() is called)
+BASE_URI = None
+
 
 def parse_xml_file(xmlData):
     """Parse Magnis RunInfo XML and extract metadata"""
@@ -117,9 +120,8 @@ def find_reagent_kit_by_name(kit_name):
     """
     try:
         # Search for reagent kits by name (URL encode the name parameter)
-        base_uri = str(clarity.getBaseURI())
         encoded_name = quote(kit_name)
-        search_uri = f"{base_uri}reagentkits?name={encoded_name}"
+        search_uri = f"{BASE_URI}reagentkits?name={encoded_name}"
 
         print(f"  Searching for reagent kit: '{kit_name}'")
         print(f"  URI: {search_uri}")
@@ -164,10 +166,9 @@ def find_reagent_lot(kit_uri, lot_number):
         Reagent lot URI if found, None otherwise
     """
     try:
-        base_uri = str(clarity.getBaseURI())
         # Get kit ID from URI
         kit_id = kit_uri.split('/')[-1]
-        search_uri = f"{base_uri}reagentlots?kitid={kit_id}"
+        search_uri = f"{BASE_URI}reagentlots?kitid={kit_id}"
 
         print(f"  Searching for lot number: '{lot_number}' in kit {kit_id}")
 
@@ -250,8 +251,7 @@ def create_reagent_lot(kit_uri, kit_name, lot_number, expiry_date):
         Reagent lot URI if created successfully, None otherwise
     """
     try:
-        base_uri = str(clarity.getBaseURI())
-        create_uri = f"{base_uri}reagentlots"
+        create_uri = f"{BASE_URI}reagentlots"
 
         # Build the XML for creating a reagent lot
         lot_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
@@ -316,9 +316,8 @@ def find_existing_lot_by_all_lots(kit_uri, lot_number):
         Reagent lot URI if found, None otherwise
     """
     try:
-        base_uri = str(clarity.getBaseURI())
         kit_id = kit_uri.split('/')[-1]
-        search_uri = f"{base_uri}reagentlots?kitid={kit_id}"
+        search_uri = f"{BASE_URI}reagentlots?kitid={kit_id}"
 
         print(f"  Searching all lots for kit {kit_id} to find duplicate...")
 
@@ -640,7 +639,7 @@ def download_xml_from_clarity(fileLuid):
     """Download Magnis RunInfo XML from Clarity artifact"""
     
     try:
-        xmlArtURI = str(clarity.getBaseURI()) + f"artifacts/{fileLuid}"
+        xmlArtURI = BASE_URI + f"artifacts/{fileLuid}"
         print(f"XML Artifact URI: {xmlArtURI}")
         
         getxmlArtifact = clarity.GET(xmlArtURI)
@@ -1053,13 +1052,17 @@ def add_reagent_label_to_artifact(artifact_dom, artifact_uri, reagent_label_name
 def main():
     global args
     global clarity
+    global BASE_URI
     args = setupArguments()
-    
+
     if not (args.username and args.password and args.stepURI and args.fileLuid):
         print("Missing required arguments. Please provide username, password, stepURI, and fileLUID.")
         sys.exit(1)
 
     clarity.setup(username=args.username, password=args.password, sourceURI=args.stepURI)
+
+    # Cache the base URI to avoid repeated warnings from glsapiutil3
+    BASE_URI = str(clarity.getBaseURI())
 
     # Download the Magnis XML file
     print("="*60)

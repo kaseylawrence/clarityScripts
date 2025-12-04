@@ -346,6 +346,72 @@ def process_reagent_kits(labware_list):
     return processed_reagents
 
 
+def associate_reagent_lots_with_step(reagent_info, stepURI):
+    """
+    Associate reagent lots with a step using the steps/{limsid}/reagentlots endpoint
+
+    Args:
+        reagent_info: List of processed reagent dictionaries from process_reagent_kits
+        stepURI: Step URI
+
+    Returns:
+        Boolean indicating success
+    """
+    print("\n" + "="*60)
+    print("=== Associating Reagent Lots with Step ===")
+    print("="*60)
+
+    # Filter to only lots that were successfully found or created
+    valid_lots = [r for r in reagent_info if r['lot_uri'] is not None]
+
+    if not valid_lots:
+        print("No valid reagent lots to associate")
+        return True
+
+    # Build the reagent lots URI
+    reagent_lots_uri = f"{stepURI}/reagentlots"
+    print(f"Reagent Lots URI: {reagent_lots_uri}")
+
+    # Build the XML for reagent lots
+    # Start with the root element
+    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
+    xml_parts.append('<reagent-lots xmlns="http://genologics.com/ri/step">')
+
+    for reagent in valid_lots:
+        lot_uri = reagent['lot_uri']
+        xml_parts.append(f'  <reagent-lot uri="{lot_uri}"/>')
+
+    xml_parts.append('</reagent-lots>')
+
+    reagent_lots_xml = '\n'.join(xml_parts)
+
+    print(f"\nAssociating {len(valid_lots)} reagent lot(s) with step:")
+    for reagent in valid_lots:
+        print(f"  - {reagent['clarity_name']}: Lot {reagent['lot_number']}")
+
+    try:
+        response = requests.post(
+            reagent_lots_uri,
+            data=reagent_lots_xml.encode('utf-8'),
+            headers={'Content-Type': 'application/xml'},
+            auth=(args.username, args.password)
+        )
+
+        if response.status_code in [200, 201]:
+            print(f"\n✓ Successfully associated {len(valid_lots)} reagent lot(s) with step")
+            return True
+        else:
+            print(f"\n✗ ERROR: POST failed with status {response.status_code}")
+            print(f"Response: {response.text}")
+            return False
+
+    except Exception as e:
+        print(f"\n✗ ERROR associating reagent lots: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def update_step_udfs(field_mappings, stepURI, optional_fields=None):
     """
     Update step details UDF fields
@@ -939,24 +1005,7 @@ def main():
     # Process reagent kits and lots
     reagent_info = process_reagent_kits(magnis_data.get('labware', []))
 
-    # Build reagent lot summary for step details
-    reagent_summary = []
-    for reagent in reagent_info:
-        status_msg = {
-            'lot_created': 'CREATED',
-            'lot_exists': 'EXISTS',
-            'kit_not_found': 'KIT NOT FOUND',
-            'lot_creation_failed': 'CREATION FAILED'
-        }.get(reagent['status'], 'UNKNOWN')
-
-        reagent_summary.append(
-            f"{reagent['clarity_name']}: Lot {reagent['lot_number']} "
-            f"(Exp: {reagent['expiry_date']}) [{status_msg}]"
-        )
-
-    reagent_summary_text = '\n'.join(reagent_summary) if reagent_summary else 'No reagent kits processed'
-
-    # Map to Clarity UDF fields
+    # Map to Clarity UDF fields (excluding reagent lots - they use a separate endpoint)
     field_mappings = {
         'Run Name': magnis_data.get('run_name', ''),
         'Protocol Name': magnis_data.get('protocol_name', ''),
@@ -968,18 +1017,16 @@ def main():
         'Input Amount (ng)': magnis_data.get('input_amount', ''),
         'Probe Design': magnis_data.get('probe_design', ''),
         'Index Strip': index_barcode,
-        'Reagent Lots': reagent_summary_text,
         'Audit Trail': magnis_data.get('logs', ''),
     }
-    
+
     # Update the step details
     print("\n" + "="*60)
     print("Updating Clarity step details...")
     print("="*60)
     success, failed_optional = update_step_udfs(
         field_mappings,
-        args.stepURI,
-        optional_fields=['Reagent Lots']  # Make Reagent Lots optional
+        args.stepURI
     )
 
     if not success:
@@ -988,7 +1035,13 @@ def main():
 
     if failed_optional:
         print(f"\n⚠ Note: {len(failed_optional)} optional field(s) were not updated: {', '.join(failed_optional)}")
-        print("  Reagent lot information will still be displayed in the summary below")
+
+    # Associate reagent lots with the step using the dedicated endpoint
+    if reagent_info:
+        reagent_success = associate_reagent_lots_with_step(reagent_info, args.stepURI)
+        if not reagent_success:
+            print("\n⚠ WARNING: Failed to associate reagent lots with step")
+            print("  Continuing with sample processing...")
     
     # Only match samples if we have samples
     if samples_from_xml:

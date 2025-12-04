@@ -489,8 +489,8 @@ def associate_reagent_lots_with_step(reagent_info, stepURI):
     parsed_uri = urlparse(BASE_URI)
     origin = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
 
-    # First, GET existing reagent lots to merge with new ones
-    print(f"\nChecking for existing reagent lots on step...")
+    # First, GET the current lots XML to preserve structure
+    print(f"\nGetting current reagent lots structure from step...")
     try:
         get_response = requests.get(
             reagent_lots_uri,
@@ -502,23 +502,50 @@ def associate_reagent_lots_with_step(reagent_info, stepURI):
             }
         )
 
-        existing_lot_uris = set()
-        if get_response.status_code == 200:
-            existing_root = ET.fromstring(get_response.content)
-            existing_lots = existing_root.findall('.//{http://genologics.com/ri/step}reagent-lot')
-            if not existing_lots:
-                existing_lots = existing_root.findall('.//reagent-lot')
+        if get_response.status_code != 200:
+            print(f"  ✗ Could not GET existing lots (status {get_response.status_code})")
+            return False
 
-            for lot in existing_lots:
+        # Parse the existing XML to get the structure
+        existing_root = ET.fromstring(get_response.content)
+
+        # Extract namespace and attributes from root
+        root_attribs = existing_root.attrib
+        uri_attrib = root_attribs.get('uri', reagent_lots_uri)
+
+        # Find existing lots
+        existing_lots = existing_root.find('.//{http://genologics.com/ri/step}reagent-lots')
+        if existing_lots is None:
+            existing_lots = existing_root.find('.//reagent-lots')
+
+        existing_lot_uris = set()
+        if existing_lots is not None:
+            for lot in existing_lots.findall('.//{http://genologics.com/ri/step}reagent-lot'):
                 lot_uri = lot.get('uri')
                 if lot_uri:
                     existing_lot_uris.add(lot_uri)
-            print(f"  Found {len(existing_lot_uris)} existing reagent lot(s) on step")
-        else:
-            print(f"  No existing reagent lots (status {get_response.status_code})")
+            if not existing_lot_uris:
+                for lot in existing_lots.findall('.//reagent-lot'):
+                    lot_uri = lot.get('uri')
+                    if lot_uri:
+                        existing_lot_uris.add(lot_uri)
+
+        print(f"  Found {len(existing_lot_uris)} existing reagent lot(s) on step")
+
+        # Get step and configuration elements
+        step_elem = existing_root.find('.//{http://genologics.com/ri/step}step')
+        if step_elem is None:
+            step_elem = existing_root.find('.//step')
+
+        config_elem = existing_root.find('.//{http://genologics.com/ri/step}configuration')
+        if config_elem is None:
+            config_elem = existing_root.find('.//configuration')
+
     except Exception as e:
-        print(f"  Could not retrieve existing lots: {e}")
-        existing_lot_uris = set()
+        print(f"  ✗ ERROR retrieving existing lots: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
     # Combine new and existing lots (avoid duplicates)
     new_lot_uris = {r['lot_uri'] for r in valid_lots}
@@ -528,24 +555,39 @@ def associate_reagent_lots_with_step(reagent_info, stepURI):
     print(f"  - Already associated: {len(existing_lot_uris)}")
     print(f"  - New to add: {len(new_lot_uris - existing_lot_uris)}")
 
-    # Build the XML for reagent lots
-    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
-    xml_parts.append('<stp:reagent-lots xmlns:stp="http://genologics.com/ri/step">')
-
-    for lot_uri in all_lot_uris:
-        xml_parts.append(f'  <reagent-lot uri="{lot_uri}"/>')
-
-    xml_parts.append('</stp:reagent-lots>')
-
-    reagent_lots_xml = '\n'.join(xml_parts)
-
-    print(f"\nAssociating {len(valid_lots)} new reagent lot(s) with step:")
+    print(f"\nAssociating {len(valid_lots)} reagent lot(s) with step:")
     for reagent in valid_lots:
         status = "already on step" if reagent['lot_uri'] in existing_lot_uris else "adding"
         print(f"  - {reagent['clarity_name']}: Lot {reagent['lot_number']} [{status}]")
 
+    # Build the complete XML structure matching Clarity's format
+    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
+    xml_parts.append(f'<stp:lots xmlns:stp="http://genologics.com/ri/step" uri="{uri_attrib}">')
+
+    # Add step element
+    if step_elem is not None:
+        step_rel = step_elem.get('rel', 'steps')
+        step_uri_val = step_elem.get('uri', stepURI)
+        xml_parts.append(f'  <step rel="{step_rel}" uri="{step_uri_val}"/>')
+
+    # Add configuration element
+    if config_elem is not None:
+        config_uri = config_elem.get('uri', '')
+        config_text = config_elem.text if config_elem.text else ''
+        xml_parts.append(f'  <configuration uri="{config_uri}">{config_text}</configuration>')
+
+    # Add reagent-lots section with all lots
+    xml_parts.append('  <reagent-lots>')
+    for lot_uri in sorted(all_lot_uris):  # Sort for consistent ordering
+        xml_parts.append(f'    <reagent-lot uri="{lot_uri}"/>')
+    xml_parts.append('  </reagent-lots>')
+
+    xml_parts.append('</stp:lots>')
+
+    reagent_lots_xml = '\n'.join(xml_parts)
+
     try:
-        # Use PUT to replace the entire reagent lots list
+        # Use PUT to replace the entire lots structure
         # Include required security headers for Clarity LIMS v5.1+
         response = requests.put(
             reagent_lots_uri,

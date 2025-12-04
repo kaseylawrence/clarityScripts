@@ -484,36 +484,89 @@ def associate_reagent_lots_with_step(reagent_info, stepURI):
     reagent_lots_uri = f"{stepURI}/reagentlots"
     print(f"Reagent Lots URI: {reagent_lots_uri}")
 
-    # Build the XML for reagent lots
-    # Start with the root element
-    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
-    xml_parts.append('<reagent-lots xmlns="http://genologics.com/ri/step">')
+    # Extract the server origin for required headers
+    from urllib.parse import urlparse
+    parsed_uri = urlparse(BASE_URI)
+    origin = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
 
-    for reagent in valid_lots:
-        lot_uri = reagent['lot_uri']
+    # First, GET existing reagent lots to merge with new ones
+    print(f"\nChecking for existing reagent lots on step...")
+    try:
+        get_response = requests.get(
+            reagent_lots_uri,
+            auth=(args.username, args.password),
+            headers={
+                'Accept': 'application/xml',
+                'Origin': origin,
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        )
+
+        existing_lot_uris = set()
+        if get_response.status_code == 200:
+            existing_root = ET.fromstring(get_response.content)
+            existing_lots = existing_root.findall('.//{http://genologics.com/ri/step}reagent-lot')
+            if not existing_lots:
+                existing_lots = existing_root.findall('.//reagent-lot')
+
+            for lot in existing_lots:
+                lot_uri = lot.get('uri')
+                if lot_uri:
+                    existing_lot_uris.add(lot_uri)
+            print(f"  Found {len(existing_lot_uris)} existing reagent lot(s) on step")
+        else:
+            print(f"  No existing reagent lots (status {get_response.status_code})")
+    except Exception as e:
+        print(f"  Could not retrieve existing lots: {e}")
+        existing_lot_uris = set()
+
+    # Combine new and existing lots (avoid duplicates)
+    new_lot_uris = {r['lot_uri'] for r in valid_lots}
+    all_lot_uris = existing_lot_uris | new_lot_uris
+
+    print(f"\nTotal reagent lots to associate: {len(all_lot_uris)}")
+    print(f"  - Already associated: {len(existing_lot_uris)}")
+    print(f"  - New to add: {len(new_lot_uris - existing_lot_uris)}")
+
+    # Build the XML for reagent lots
+    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
+    xml_parts.append('<stp:reagent-lots xmlns:stp="http://genologics.com/ri/step">')
+
+    for lot_uri in all_lot_uris:
         xml_parts.append(f'  <reagent-lot uri="{lot_uri}"/>')
 
-    xml_parts.append('</reagent-lots>')
+    xml_parts.append('</stp:reagent-lots>')
 
     reagent_lots_xml = '\n'.join(xml_parts)
 
-    print(f"\nAssociating {len(valid_lots)} reagent lot(s) with step:")
+    print(f"\nAssociating {len(valid_lots)} new reagent lot(s) with step:")
     for reagent in valid_lots:
-        print(f"  - {reagent['clarity_name']}: Lot {reagent['lot_number']}")
+        status = "already on step" if reagent['lot_uri'] in existing_lot_uris else "adding"
+        print(f"  - {reagent['clarity_name']}: Lot {reagent['lot_number']} [{status}]")
 
     try:
-        response = requests.post(
+        # Use PUT to replace the entire reagent lots list
+        # Include required security headers for Clarity LIMS v5.1+
+        response = requests.put(
             reagent_lots_uri,
             data=reagent_lots_xml.encode('utf-8'),
-            headers={'Content-Type': 'application/xml'},
+            headers={
+                'Content-Type': 'application/xml',
+                'Origin': origin,
+                'X-Requested-With': 'XMLHttpRequest'
+            },
             auth=(args.username, args.password)
         )
 
         if response.status_code in [200, 201]:
-            print(f"\n✓ Successfully associated {len(valid_lots)} reagent lot(s) with step")
+            newly_added = len(new_lot_uris - existing_lot_uris)
+            if newly_added > 0:
+                print(f"\n✓ Successfully associated {newly_added} new reagent lot(s) with step")
+            else:
+                print(f"\n✓ All reagent lots were already associated with step")
             return True
         else:
-            print(f"\n✗ ERROR: POST failed with status {response.status_code}")
+            print(f"\n✗ ERROR: PUT failed with status {response.status_code}")
             print(f"Response: {response.text}")
             return False
 

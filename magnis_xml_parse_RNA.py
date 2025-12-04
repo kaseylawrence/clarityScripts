@@ -5,6 +5,7 @@ import os
 from optparse import OptionParser
 from io import BytesIO
 import sys
+from urllib.parse import quote
 
 sys.path.append('/opt/gls/clarity/customextensions')
 import glsapiutil3
@@ -24,7 +25,7 @@ def setupArguments():
 clarity = glsapiutil3.glsapiutil3()
 
 # Configuration for reagent kit prefix in Clarity
-REAGENT_KIT_PREFIX = "Agilent "  # Prefix added to Magnis kit names in Clarity
+REAGENT_KIT_PREFIX = "Magnis "  # Prefix added to Magnis kit names in Clarity
 
 
 def parse_xml_file(xmlData):
@@ -115,9 +116,10 @@ def find_reagent_kit_by_name(kit_name):
         Reagent kit URI if found, None otherwise
     """
     try:
-        # Search for reagent kits by name
+        # Search for reagent kits by name (URL encode the name parameter)
         base_uri = str(clarity.getBaseURI())
-        search_uri = f"{base_uri}reagentkits?name={kit_name}"
+        encoded_name = quote(kit_name)
+        search_uri = f"{base_uri}reagentkits?name={encoded_name}"
 
         print(f"  Searching for reagent kit: '{kit_name}'")
         print(f"  URI: {search_uri}")
@@ -344,31 +346,45 @@ def process_reagent_kits(labware_list):
     return processed_reagents
 
 
-def update_step_udfs(field_mappings, stepURI):
-    """Update step details UDF fields"""
-    
+def update_step_udfs(field_mappings, stepURI, optional_fields=None):
+    """
+    Update step details UDF fields
+
+    Args:
+        field_mappings: Dictionary of field names to values
+        stepURI: Step URI
+        optional_fields: List of field names that are optional (won't fail if they don't exist)
+
+    Returns:
+        Tuple of (success, list of failed optional fields)
+    """
+    if optional_fields is None:
+        optional_fields = []
+
     # Build the details URI
     detailsURI = f'{stepURI}/details'
     print(f"Details URI: {detailsURI}")
-    
+
     # Get the step details XML
     detailsXML = clarity.GET(detailsURI)
     step_dom = parseString(detailsXML)
-    
+
     # Get the fields section
     fields_nodes = step_dom.getElementsByTagName('fields')
     if not fields_nodes:
         print("ERROR: No <fields> section found in step details")
-        return False
-    
+        return False, []
+
     fields_section = fields_nodes[0]
-    
+
     # Update each field
     updated_count = 0
+    failed_optional = []
+
     for field_name, field_value in field_mappings.items():
         if not field_value:  # Skip empty values
             continue
-            
+
         udf_nodes = step_dom.getElementsByTagName('udf:field')
         existing_field = None
 
@@ -396,10 +412,10 @@ def update_step_udfs(field_mappings, stepURI):
             fields_section.appendChild(new_field)
             print(f"Created field '{field_name}': {field_value[:100]}...")  # Truncate long values
             updated_count += 1
-    
+
     # Save the updated XML
     newXML = step_dom.toxml().encode('utf-8')
-    
+
     try:
         response = requests.put(
             detailsURI,
@@ -407,19 +423,38 @@ def update_step_udfs(field_mappings, stepURI):
             headers={'Content-Type': 'application/xml'},
             auth=(args.username, args.password)
         )
-        
+
         if response.status_code in [200, 201]:
             print(f"Successfully updated {updated_count} fields")
-            return True
+            return True, failed_optional
         else:
+            # Check if the error is about an unknown field
+            if 'Unknown or unsupported field' in response.text:
+                # Extract which field(s) failed
+                import re
+                match = re.search(r"field '([^']+)'", response.text)
+                if match:
+                    failed_field = match.group(1)
+                    if failed_field in optional_fields:
+                        print(f"⚠ WARNING: Optional field '{failed_field}' is not configured in this step type")
+                        print(f"  You can add this field in Clarity LIMS Step Configuration if needed")
+
+                        # Remove the failed field and retry
+                        remaining_fields = {k: v for k, v in field_mappings.items() if k != failed_field}
+                        if remaining_fields:
+                            print(f"  Retrying without '{failed_field}' field...")
+                            return update_step_udfs(remaining_fields, stepURI, optional_fields)
+                        else:
+                            return True, [failed_field]
+
             print(f"ERROR: PUT request failed with status {response.status_code}")
             print(f"Response: {response.text}")
-            return False
+            return False, failed_optional
     except Exception as e:
         print(f"ERROR updating step details: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        return False, failed_optional
 
 
 def download_xml_from_clarity(fileLuid):
@@ -941,11 +976,19 @@ def main():
     print("\n" + "="*60)
     print("Updating Clarity step details...")
     print("="*60)
-    success = update_step_udfs(field_mappings, args.stepURI)
-    
+    success, failed_optional = update_step_udfs(
+        field_mappings,
+        args.stepURI,
+        optional_fields=['Reagent Lots']  # Make Reagent Lots optional
+    )
+
     if not success:
         print("\nERROR: Failed to update step details")
         sys.exit(1)
+
+    if failed_optional:
+        print(f"\n⚠ Note: {len(failed_optional)} optional field(s) were not updated: {', '.join(failed_optional)}")
+        print("  Reagent lot information will still be displayed in the summary below")
     
     # Only match samples if we have samples
     if samples_from_xml:

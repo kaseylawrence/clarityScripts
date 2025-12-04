@@ -23,6 +23,9 @@ def setupArguments():
 
 clarity = glsapiutil3.glsapiutil3()
 
+# Configuration for reagent kit prefix in Clarity
+REAGENT_KIT_PREFIX = "Agilent "  # Prefix added to Magnis kit names in Clarity
+
 
 def parse_xml_file(xmlData):
     """Parse Magnis RunInfo XML and extract metadata"""
@@ -68,6 +71,277 @@ def parse_xml_file(xmlData):
     data['logs'] = '\n'.join(logs)
 
     return data
+
+
+def convert_mmyy_to_date(mmyy_str):
+    """
+    Convert expiry date from MMYY format (e.g., '0226') to Clarity date format (YYYY-MM-DD)
+
+    Args:
+        mmyy_str: Date string in MMYY format (e.g., '0226' for February 2026)
+
+    Returns:
+        Date string in YYYY-MM-DD format (e.g., '2026-02-28')
+    """
+    from datetime import datetime
+    import calendar
+
+    if not mmyy_str or len(mmyy_str) != 4:
+        print(f"WARNING: Invalid date format '{mmyy_str}', expected MMYY")
+        return None
+
+    try:
+        month = int(mmyy_str[:2])
+        year = int(mmyy_str[2:4]) + 2000  # Convert YY to YYYY
+
+        # Get the last day of the month
+        last_day = calendar.monthrange(year, month)[1]
+
+        # Return in YYYY-MM-DD format (last day of the month)
+        return f"{year:04d}-{month:02d}-{last_day:02d}"
+    except (ValueError, IndexError) as e:
+        print(f"ERROR: Failed to convert date '{mmyy_str}': {e}")
+        return None
+
+
+def find_reagent_kit_by_name(kit_name):
+    """
+    Find a reagent kit in Clarity by name
+
+    Args:
+        kit_name: Name of the reagent kit (with prefix already applied)
+
+    Returns:
+        Reagent kit URI if found, None otherwise
+    """
+    try:
+        # Search for reagent kits by name
+        base_uri = str(clarity.getBaseURI())
+        search_uri = f"{base_uri}reagentkits?name={kit_name}"
+
+        print(f"  Searching for reagent kit: '{kit_name}'")
+        print(f"  URI: {search_uri}")
+
+        response = clarity.GET(search_uri)
+        root = ET.fromstring(response)
+
+        # Look for reagent-kit elements
+        namespaces = {'kit': 'http://genologics.com/ri/reagentkit'}
+        kit_elements = root.findall('.//kit:reagent-kit', namespaces)
+
+        # If namespace search doesn't work, try without namespace
+        if not kit_elements:
+            kit_elements = root.findall('.//reagent-kit')
+
+        for kit_elem in kit_elements:
+            kit_uri = kit_elem.get('uri')
+            name = kit_elem.get('name')
+            if name == kit_name:
+                print(f"  ✓ Found reagent kit: {kit_uri}")
+                return kit_uri
+
+        print(f"  ✗ Reagent kit '{kit_name}' not found in Clarity")
+        return None
+
+    except Exception as e:
+        print(f"  ✗ ERROR searching for reagent kit: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def find_reagent_lot(kit_uri, lot_number):
+    """
+    Find a reagent lot in Clarity by kit URI and lot number
+
+    Args:
+        kit_uri: URI of the reagent kit
+        lot_number: Lot number to search for
+
+    Returns:
+        Reagent lot URI if found, None otherwise
+    """
+    try:
+        base_uri = str(clarity.getBaseURI())
+        # Get kit ID from URI
+        kit_id = kit_uri.split('/')[-1]
+        search_uri = f"{base_uri}reagentlots?kitid={kit_id}"
+
+        print(f"  Searching for lot number: '{lot_number}' in kit {kit_id}")
+
+        response = clarity.GET(search_uri)
+        root = ET.fromstring(response)
+
+        # Look for reagent-lot elements
+        namespaces = {'lot': 'http://genologics.com/ri/reagentlot'}
+        lot_elements = root.findall('.//lot:reagent-lot', namespaces)
+
+        # If namespace search doesn't work, try without namespace
+        if not lot_elements:
+            lot_elements = root.findall('.//reagent-lot')
+
+        for lot_elem in lot_elements:
+            lot_uri = lot_elem.get('uri')
+            # Get the lot details to check lot number
+            lot_xml = clarity.GET(lot_uri)
+            lot_root = ET.fromstring(lot_xml)
+
+            lot_num_elem = lot_root.find('.//{http://genologics.com/ri/reagentlot}lot-number')
+            if lot_num_elem is None:
+                lot_num_elem = lot_root.find('.//lot-number')
+
+            if lot_num_elem is not None and lot_num_elem.text == lot_number:
+                print(f"  ✓ Found existing lot: {lot_uri}")
+                return lot_uri
+
+        print(f"  Lot number '{lot_number}' not found")
+        return None
+
+    except Exception as e:
+        print(f"  ✗ ERROR searching for reagent lot: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def create_reagent_lot(kit_uri, kit_name, lot_number, expiry_date):
+    """
+    Create a new reagent lot in Clarity
+
+    Args:
+        kit_uri: URI of the reagent kit
+        kit_name: Name of the reagent kit
+        lot_number: Lot number
+        expiry_date: Expiry date in YYYY-MM-DD format
+
+    Returns:
+        Reagent lot URI if created successfully, None otherwise
+    """
+    try:
+        base_uri = str(clarity.getBaseURI())
+        create_uri = f"{base_uri}reagentlots"
+
+        # Build the XML for creating a reagent lot
+        lot_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<lot:reagent-lot xmlns:lot="http://genologics.com/ri/reagentlot">
+    <reagent-kit uri="{kit_uri}" name="{kit_name}"/>
+    <name>{kit_name} Lot {lot_number}</name>
+    <lot-number>{lot_number}</lot-number>
+    <expiry-date>{expiry_date}</expiry-date>
+    <status>ACTIVE</status>
+</lot:reagent-lot>'''
+
+        print(f"  Creating new reagent lot...")
+        print(f"  Kit: {kit_name}")
+        print(f"  Lot: {lot_number}")
+        print(f"  Expiry: {expiry_date}")
+
+        response = requests.post(
+            create_uri,
+            data=lot_xml.encode('utf-8'),
+            headers={'Content-Type': 'application/xml'},
+            auth=(args.username, args.password)
+        )
+
+        if response.status_code in [200, 201]:
+            # Extract the URI from the response
+            response_root = ET.fromstring(response.content)
+            lot_uri = response_root.get('uri')
+            print(f"  ✓ Successfully created reagent lot: {lot_uri}")
+            return lot_uri
+        else:
+            print(f"  ✗ ERROR: POST failed with status {response.status_code}")
+            print(f"    Response: {response.text}")
+            return None
+
+    except Exception as e:
+        print(f"  ✗ ERROR creating reagent lot: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def process_reagent_kits(labware_list):
+    """
+    Process reagent kits from Magnis XML and create/update lots in Clarity
+
+    Args:
+        labware_list: List of labware dictionaries from parse_xml_file
+
+    Returns:
+        Dictionary with processed reagent information
+    """
+    print("\n" + "="*60)
+    print("=== Processing Reagent Kits and Lots ===")
+    print("="*60)
+
+    processed_reagents = []
+
+    for labware in labware_list:
+        name = labware.get('name', '')
+        lot_number = labware.get('lot_number', '')
+        expiry_mmyy = labware.get('expiry_date', '')
+
+        # Skip if no lot number (not a reagent kit)
+        if not lot_number:
+            print(f"\nSkipping '{name}' - no lot number")
+            continue
+
+        print(f"\n--- Processing: {name} ---")
+        print(f"  Lot Number: {lot_number}")
+        print(f"  Expiry Date (MMYY): {expiry_mmyy}")
+
+        # Convert expiry date to Clarity format
+        expiry_date = convert_mmyy_to_date(expiry_mmyy)
+        if not expiry_date:
+            print(f"  ⚠ Skipping due to invalid expiry date")
+            continue
+
+        print(f"  Expiry Date (Clarity): {expiry_date}")
+
+        # Build the Clarity kit name with prefix
+        clarity_kit_name = f"{REAGENT_KIT_PREFIX}{name}"
+
+        # Find the reagent kit in Clarity
+        kit_uri = find_reagent_kit_by_name(clarity_kit_name)
+
+        if not kit_uri:
+            print(f"  ⚠ WARNING: Reagent kit '{clarity_kit_name}' not found in Clarity")
+            print(f"     Please create the kit in Clarity before running this script")
+            processed_reagents.append({
+                'name': name,
+                'clarity_name': clarity_kit_name,
+                'lot_number': lot_number,
+                'expiry_date': expiry_date,
+                'status': 'kit_not_found',
+                'lot_uri': None
+            })
+            continue
+
+        # Check if the lot already exists
+        lot_uri = find_reagent_lot(kit_uri, lot_number)
+
+        if lot_uri:
+            print(f"  ✓ Lot already exists in Clarity")
+            status = 'lot_exists'
+        else:
+            # Create the lot
+            lot_uri = create_reagent_lot(kit_uri, clarity_kit_name, lot_number, expiry_date)
+            if lot_uri:
+                status = 'lot_created'
+            else:
+                status = 'lot_creation_failed'
+
+        processed_reagents.append({
+            'name': name,
+            'clarity_name': clarity_kit_name,
+            'lot_number': lot_number,
+            'expiry_date': expiry_date,
+            'status': status,
+            'lot_uri': lot_uri
+        })
+
+    return processed_reagents
 
 
 def update_step_udfs(field_mappings, stepURI):
@@ -627,6 +901,26 @@ def main():
         samples_from_xml = []
         index_barcode = ''
     
+    # Process reagent kits and lots
+    reagent_info = process_reagent_kits(magnis_data.get('labware', []))
+
+    # Build reagent lot summary for step details
+    reagent_summary = []
+    for reagent in reagent_info:
+        status_msg = {
+            'lot_created': 'CREATED',
+            'lot_exists': 'EXISTS',
+            'kit_not_found': 'KIT NOT FOUND',
+            'lot_creation_failed': 'CREATION FAILED'
+        }.get(reagent['status'], 'UNKNOWN')
+
+        reagent_summary.append(
+            f"{reagent['clarity_name']}: Lot {reagent['lot_number']} "
+            f"(Exp: {reagent['expiry_date']}) [{status_msg}]"
+        )
+
+    reagent_summary_text = '\n'.join(reagent_summary) if reagent_summary else 'No reagent kits processed'
+
     # Map to Clarity UDF fields
     field_mappings = {
         'Run Name': magnis_data.get('run_name', ''),
@@ -639,6 +933,7 @@ def main():
         'Input Amount (ng)': magnis_data.get('input_amount', ''),
         'Probe Design': magnis_data.get('probe_design', ''),
         'Index Strip': index_barcode,
+        'Reagent Lots': reagent_summary_text,
         'Audit Trail': magnis_data.get('logs', ''),
     }
     
@@ -669,8 +964,16 @@ def main():
         print("✓ SUCCESS: All updates completed!")
         print("="*60)
         print(f"  - Step details: {len([v for v in field_mappings.values() if v])} fields updated")
+        print(f"  - Reagent lots: {len(reagent_info)} processed")
         print(f"  - Reagent labels: {len(result['updated'])} artifacts updated")
         print(f"  - Index Strip: {result.get('strip_label', 'Unknown')} (Indexes {(result.get('strip_number', 1)-1)*8+1}-{result.get('strip_number', 1)*8})")
+
+        # Show reagent lot summary
+        if reagent_info:
+            print(f"\nReagent Lots:")
+            for reagent in reagent_info:
+                status_icon = "✓" if reagent['status'] in ['lot_created', 'lot_exists'] else "⚠"
+                print(f"  {status_icon} {reagent['clarity_name']}: Lot {reagent['lot_number']} (Exp: {reagent['expiry_date']}) [{reagent['status'].upper().replace('_', ' ')}]")
         
         if result['updated']:
             print(f"\nUpdated samples with SureSelect XT HS2 dual indexes:")
@@ -691,6 +994,15 @@ def main():
         print("\n" + "="*60)
         print("✓ COMPLETED: Step details updated")
         print("="*60)
+        print(f"  - Step details: {len([v for v in field_mappings.values() if v])} fields updated")
+        print(f"  - Reagent lots: {len(reagent_info)} processed")
+
+        # Show reagent lot summary
+        if reagent_info:
+            print(f"\nReagent Lots:")
+            for reagent in reagent_info:
+                status_icon = "✓" if reagent['status'] in ['lot_created', 'lot_exists'] else "⚠"
+                print(f"  {status_icon} {reagent['clarity_name']}: Lot {reagent['lot_number']} (Exp: {reagent['expiry_date']}) [{reagent['status'].upper().replace('_', ' ')}]")
 
 
 if __name__ == '__main__':

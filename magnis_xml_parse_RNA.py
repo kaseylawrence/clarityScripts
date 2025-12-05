@@ -5,6 +5,7 @@ import os
 from optparse import OptionParser
 from io import BytesIO
 import sys
+from urllib.parse import quote
 
 sys.path.append('/opt/gls/clarity/customextensions')
 import glsapiutil3
@@ -24,7 +25,10 @@ def setupArguments():
 clarity = glsapiutil3.glsapiutil3()
 
 # Configuration for reagent kit prefix in Clarity
-REAGENT_KIT_PREFIX = "Agilent "  # Prefix added to Magnis kit names in Clarity
+REAGENT_KIT_PREFIX = "Magnis "  # Prefix added to Magnis kit names in Clarity
+
+# Base URI cache (set after clarity.setup() is called)
+BASE_URI = None
 
 
 def parse_xml_file(xmlData):
@@ -115,9 +119,9 @@ def find_reagent_kit_by_name(kit_name):
         Reagent kit URI if found, None otherwise
     """
     try:
-        # Search for reagent kits by name
-        base_uri = str(clarity.getBaseURI())
-        search_uri = f"{base_uri}reagentkits?name={kit_name}"
+        # Search for reagent kits by name (URL encode the name parameter)
+        encoded_name = quote(kit_name)
+        search_uri = f"{BASE_URI}reagentkits?name={encoded_name}"
 
         print(f"  Searching for reagent kit: '{kit_name}'")
         print(f"  URI: {search_uri}")
@@ -162,14 +166,29 @@ def find_reagent_lot(kit_uri, lot_number):
         Reagent lot URI if found, None otherwise
     """
     try:
-        base_uri = str(clarity.getBaseURI())
         # Get kit ID from URI
         kit_id = kit_uri.split('/')[-1]
-        search_uri = f"{base_uri}reagentlots?kitid={kit_id}"
+        search_uri = f"{BASE_URI}reagentlots?kitid={kit_id}"
 
         print(f"  Searching for lot number: '{lot_number}' in kit {kit_id}")
 
-        response = clarity.GET(search_uri)
+        # Wrap in try-except to handle glsapiutil3 Python 2/3 compatibility issues
+        try:
+            response = clarity.GET(search_uri)
+        except Exception as get_error:
+            # If GET fails due to glsapiutil3 error handling issues, try with requests directly
+            print(f"  Note: Using direct requests due to API utility error")
+            response_obj = requests.get(
+                search_uri,
+                auth=(args.username, args.password),
+                headers={'Accept': 'application/xml'}
+            )
+            if response_obj.status_code == 200:
+                response = response_obj.content
+            else:
+                print(f"  ✗ ERROR: Direct GET failed with status {response_obj.status_code}")
+                return None
+
         root = ET.fromstring(response)
 
         # Look for reagent-lot elements
@@ -182,8 +201,22 @@ def find_reagent_lot(kit_uri, lot_number):
 
         for lot_elem in lot_elements:
             lot_uri = lot_elem.get('uri')
+
             # Get the lot details to check lot number
-            lot_xml = clarity.GET(lot_uri)
+            try:
+                lot_xml = clarity.GET(lot_uri)
+            except Exception:
+                # Fallback to direct request
+                lot_response = requests.get(
+                    lot_uri,
+                    auth=(args.username, args.password),
+                    headers={'Accept': 'application/xml'}
+                )
+                if lot_response.status_code == 200:
+                    lot_xml = lot_response.content
+                else:
+                    continue
+
             lot_root = ET.fromstring(lot_xml)
 
             lot_num_elem = lot_root.find('.//{http://genologics.com/ri/reagentlot}lot-number')
@@ -194,7 +227,7 @@ def find_reagent_lot(kit_uri, lot_number):
                 print(f"  ✓ Found existing lot: {lot_uri}")
                 return lot_uri
 
-        print(f"  Lot number '{lot_number}' not found")
+        print(f"  Lot number '{lot_number}' not found in {len(lot_elements)} lot(s)")
         return None
 
     except Exception as e:
@@ -218,8 +251,7 @@ def create_reagent_lot(kit_uri, kit_name, lot_number, expiry_date):
         Reagent lot URI if created successfully, None otherwise
     """
     try:
-        base_uri = str(clarity.getBaseURI())
-        create_uri = f"{base_uri}reagentlots"
+        create_uri = f"{BASE_URI}reagentlots"
 
         # Build the XML for creating a reagent lot
         lot_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
@@ -250,12 +282,93 @@ def create_reagent_lot(kit_uri, kit_name, lot_number, expiry_date):
             print(f"  ✓ Successfully created reagent lot: {lot_uri}")
             return lot_uri
         else:
-            print(f"  ✗ ERROR: POST failed with status {response.status_code}")
-            print(f"    Response: {response.text}")
-            return None
+            # Check if this is a duplicate lot error
+            if 'Duplicate lot' in response.text:
+                print(f"  Note: Lot already exists (duplicate detected)")
+                # Try to find the existing lot using direct search
+                return find_existing_lot_by_all_lots(kit_uri, lot_number)
+            elif 'Expiry date must be after current date' in response.text:
+                print(f"  ✗ ERROR: Expiry date {expiry_date} is in the past")
+                print(f"    Skipping this lot - it has expired")
+                return None
+            else:
+                print(f"  ✗ ERROR: POST failed with status {response.status_code}")
+                print(f"    Response: {response.text}")
+                return None
 
     except Exception as e:
         print(f"  ✗ ERROR creating reagent lot: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def find_existing_lot_by_all_lots(kit_uri, lot_number):
+    """
+    Find an existing lot by searching all lots for a kit
+    This is a fallback method when find_reagent_lot fails
+
+    Args:
+        kit_uri: URI of the reagent kit
+        lot_number: Lot number to find
+
+    Returns:
+        Reagent lot URI if found, None otherwise
+    """
+    try:
+        kit_id = kit_uri.split('/')[-1]
+        search_uri = f"{BASE_URI}reagentlots?kitid={kit_id}"
+
+        print(f"  Searching all lots for kit {kit_id} to find duplicate...")
+
+        # Use direct requests to avoid glsapiutil3 issues
+        response = requests.get(
+            search_uri,
+            auth=(args.username, args.password),
+            headers={'Accept': 'application/xml'}
+        )
+
+        if response.status_code != 200:
+            print(f"  ✗ Search failed with status {response.status_code}")
+            return None
+
+        root = ET.fromstring(response.content)
+
+        # Look for reagent-lot elements
+        namespaces = {'lot': 'http://genologics.com/ri/reagentlot'}
+        lot_elements = root.findall('.//lot:reagent-lot', namespaces)
+
+        if not lot_elements:
+            lot_elements = root.findall('.//reagent-lot')
+
+        print(f"  Found {len(lot_elements)} existing lot(s) for this kit")
+
+        for lot_elem in lot_elements:
+            lot_uri = lot_elem.get('uri')
+
+            # Get lot details
+            lot_response = requests.get(
+                lot_uri,
+                auth=(args.username, args.password),
+                headers={'Accept': 'application/xml'}
+            )
+
+            if lot_response.status_code == 200:
+                lot_root = ET.fromstring(lot_response.content)
+
+                lot_num_elem = lot_root.find('.//{http://genologics.com/ri/reagentlot}lot-number')
+                if lot_num_elem is None:
+                    lot_num_elem = lot_root.find('.//lot-number')
+
+                if lot_num_elem is not None and lot_num_elem.text == lot_number:
+                    print(f"  ✓ Found duplicate lot: {lot_uri}")
+                    return lot_uri
+
+        print(f"  ✗ Could not find lot {lot_number} in existing lots")
+        return None
+
+    except Exception as e:
+        print(f"  ✗ ERROR in fallback search: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -325,10 +438,11 @@ def process_reagent_kits(labware_list):
             print(f"  ✓ Lot already exists in Clarity")
             status = 'lot_exists'
         else:
-            # Create the lot
+            # Create the lot (or find it if duplicate)
             lot_uri = create_reagent_lot(kit_uri, clarity_kit_name, lot_number, expiry_date)
             if lot_uri:
-                status = 'lot_created'
+                # Could be newly created or found after duplicate error
+                status = 'lot_ready'
             else:
                 status = 'lot_creation_failed'
 
@@ -344,31 +458,206 @@ def process_reagent_kits(labware_list):
     return processed_reagents
 
 
-def update_step_udfs(field_mappings, stepURI):
-    """Update step details UDF fields"""
-    
+def associate_reagent_lots_with_step(reagent_info, stepURI):
+    """
+    Associate reagent lots with a step using the steps/{limsid}/reagentlots endpoint
+
+    Args:
+        reagent_info: List of processed reagent dictionaries from process_reagent_kits
+        stepURI: Step URI
+
+    Returns:
+        Boolean indicating success
+    """
+    print("\n" + "="*60)
+    print("=== Associating Reagent Lots with Step ===")
+    print("="*60)
+
+    # Filter to only lots that were successfully found or created
+    valid_lots = [r for r in reagent_info if r['lot_uri'] is not None]
+
+    if not valid_lots:
+        print("No valid reagent lots to associate")
+        return True
+
+    # Build the reagent lots URI
+    reagent_lots_uri = f"{stepURI}/reagentlots"
+    print(f"Reagent Lots URI: {reagent_lots_uri}")
+
+    # Extract the server origin for required headers
+    from urllib.parse import urlparse
+    parsed_uri = urlparse(BASE_URI)
+    origin = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
+
+    # First, GET the current lots XML to preserve structure
+    print(f"\nGetting current reagent lots structure from step...")
+    try:
+        get_response = requests.get(
+            reagent_lots_uri,
+            auth=(args.username, args.password),
+            headers={
+                'Accept': 'application/xml',
+                'Origin': origin,
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        )
+
+        if get_response.status_code != 200:
+            print(f"  ✗ Could not GET existing lots (status {get_response.status_code})")
+            return False
+
+        # Parse the existing XML to get the structure
+        existing_root = ET.fromstring(get_response.content)
+
+        # Extract namespace and attributes from root
+        root_attribs = existing_root.attrib
+        uri_attrib = root_attribs.get('uri', reagent_lots_uri)
+
+        # Find existing lots
+        existing_lots = existing_root.find('.//{http://genologics.com/ri/step}reagent-lots')
+        if existing_lots is None:
+            existing_lots = existing_root.find('.//reagent-lots')
+
+        existing_lot_uris = set()
+        if existing_lots is not None:
+            for lot in existing_lots.findall('.//{http://genologics.com/ri/step}reagent-lot'):
+                lot_uri = lot.get('uri')
+                if lot_uri:
+                    existing_lot_uris.add(lot_uri)
+            if not existing_lot_uris:
+                for lot in existing_lots.findall('.//reagent-lot'):
+                    lot_uri = lot.get('uri')
+                    if lot_uri:
+                        existing_lot_uris.add(lot_uri)
+
+        print(f"  Found {len(existing_lot_uris)} existing reagent lot(s) on step")
+
+        # Get step and configuration elements
+        step_elem = existing_root.find('.//{http://genologics.com/ri/step}step')
+        if step_elem is None:
+            step_elem = existing_root.find('.//step')
+
+        config_elem = existing_root.find('.//{http://genologics.com/ri/step}configuration')
+        if config_elem is None:
+            config_elem = existing_root.find('.//configuration')
+
+    except Exception as e:
+        print(f"  ✗ ERROR retrieving existing lots: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    # Combine new and existing lots (avoid duplicates)
+    new_lot_uris = {r['lot_uri'] for r in valid_lots}
+    all_lot_uris = existing_lot_uris | new_lot_uris
+
+    print(f"\nTotal reagent lots to associate: {len(all_lot_uris)}")
+    print(f"  - Already associated: {len(existing_lot_uris)}")
+    print(f"  - New to add: {len(new_lot_uris - existing_lot_uris)}")
+
+    print(f"\nAssociating {len(valid_lots)} reagent lot(s) with step:")
+    for reagent in valid_lots:
+        status = "already on step" if reagent['lot_uri'] in existing_lot_uris else "adding"
+        print(f"  - {reagent['clarity_name']}: Lot {reagent['lot_number']} [{status}]")
+
+    # Build the complete XML structure matching Clarity's format
+    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
+    xml_parts.append(f'<stp:lots xmlns:stp="http://genologics.com/ri/step" uri="{uri_attrib}">')
+
+    # Add step element
+    if step_elem is not None:
+        step_rel = step_elem.get('rel', 'steps')
+        step_uri_val = step_elem.get('uri', stepURI)
+        xml_parts.append(f'  <step rel="{step_rel}" uri="{step_uri_val}"/>')
+
+    # Add configuration element
+    if config_elem is not None:
+        config_uri = config_elem.get('uri', '')
+        config_text = config_elem.text if config_elem.text else ''
+        xml_parts.append(f'  <configuration uri="{config_uri}">{config_text}</configuration>')
+
+    # Add reagent-lots section with all lots
+    xml_parts.append('  <reagent-lots>')
+    for lot_uri in sorted(all_lot_uris):  # Sort for consistent ordering
+        xml_parts.append(f'    <reagent-lot uri="{lot_uri}"/>')
+    xml_parts.append('  </reagent-lots>')
+
+    xml_parts.append('</stp:lots>')
+
+    reagent_lots_xml = '\n'.join(xml_parts)
+
+    try:
+        # Use PUT to replace the entire lots structure
+        # Include required security headers for Clarity LIMS v5.1+
+        response = requests.put(
+            reagent_lots_uri,
+            data=reagent_lots_xml.encode('utf-8'),
+            headers={
+                'Content-Type': 'application/xml',
+                'Origin': origin,
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            auth=(args.username, args.password)
+        )
+
+        if response.status_code in [200, 201]:
+            newly_added = len(new_lot_uris - existing_lot_uris)
+            if newly_added > 0:
+                print(f"\n✓ Successfully associated {newly_added} new reagent lot(s) with step")
+            else:
+                print(f"\n✓ All reagent lots were already associated with step")
+            return True
+        else:
+            print(f"\n✗ ERROR: PUT failed with status {response.status_code}")
+            print(f"Response: {response.text}")
+            return False
+
+    except Exception as e:
+        print(f"\n✗ ERROR associating reagent lots: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def update_step_udfs(field_mappings, stepURI, optional_fields=None):
+    """
+    Update step details UDF fields
+
+    Args:
+        field_mappings: Dictionary of field names to values
+        stepURI: Step URI
+        optional_fields: List of field names that are optional (won't fail if they don't exist)
+
+    Returns:
+        Tuple of (success, list of failed optional fields)
+    """
+    if optional_fields is None:
+        optional_fields = []
+
     # Build the details URI
     detailsURI = f'{stepURI}/details'
     print(f"Details URI: {detailsURI}")
-    
+
     # Get the step details XML
     detailsXML = clarity.GET(detailsURI)
     step_dom = parseString(detailsXML)
-    
+
     # Get the fields section
     fields_nodes = step_dom.getElementsByTagName('fields')
     if not fields_nodes:
         print("ERROR: No <fields> section found in step details")
-        return False
-    
+        return False, []
+
     fields_section = fields_nodes[0]
-    
+
     # Update each field
     updated_count = 0
+    failed_optional = []
+
     for field_name, field_value in field_mappings.items():
         if not field_value:  # Skip empty values
             continue
-            
+
         udf_nodes = step_dom.getElementsByTagName('udf:field')
         existing_field = None
 
@@ -396,10 +685,10 @@ def update_step_udfs(field_mappings, stepURI):
             fields_section.appendChild(new_field)
             print(f"Created field '{field_name}': {field_value[:100]}...")  # Truncate long values
             updated_count += 1
-    
+
     # Save the updated XML
     newXML = step_dom.toxml().encode('utf-8')
-    
+
     try:
         response = requests.put(
             detailsURI,
@@ -407,26 +696,45 @@ def update_step_udfs(field_mappings, stepURI):
             headers={'Content-Type': 'application/xml'},
             auth=(args.username, args.password)
         )
-        
+
         if response.status_code in [200, 201]:
             print(f"Successfully updated {updated_count} fields")
-            return True
+            return True, failed_optional
         else:
+            # Check if the error is about an unknown field
+            if 'Unknown or unsupported field' in response.text:
+                # Extract which field(s) failed
+                import re
+                match = re.search(r"field '([^']+)'", response.text)
+                if match:
+                    failed_field = match.group(1)
+                    if failed_field in optional_fields:
+                        print(f"⚠ WARNING: Optional field '{failed_field}' is not configured in this step type")
+                        print(f"  You can add this field in Clarity LIMS Step Configuration if needed")
+
+                        # Remove the failed field and retry
+                        remaining_fields = {k: v for k, v in field_mappings.items() if k != failed_field}
+                        if remaining_fields:
+                            print(f"  Retrying without '{failed_field}' field...")
+                            return update_step_udfs(remaining_fields, stepURI, optional_fields)
+                        else:
+                            return True, [failed_field]
+
             print(f"ERROR: PUT request failed with status {response.status_code}")
             print(f"Response: {response.text}")
-            return False
+            return False, failed_optional
     except Exception as e:
         print(f"ERROR updating step details: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        return False, failed_optional
 
 
 def download_xml_from_clarity(fileLuid):
     """Download Magnis RunInfo XML from Clarity artifact"""
     
     try:
-        xmlArtURI = str(clarity.getBaseURI()) + f"artifacts/{fileLuid}"
+        xmlArtURI = BASE_URI + f"artifacts/{fileLuid}"
         print(f"XML Artifact URI: {xmlArtURI}")
         
         getxmlArtifact = clarity.GET(xmlArtURI)
@@ -777,31 +1085,95 @@ def match_samples_and_add_index_labels(magnis_samples, stepURI, index_strip_barc
 
 def add_reagent_label_to_artifact(artifact_dom, artifact_uri, reagent_label_name, sample_name):
     """
-    Add or update a reagent label on an artifact
-    
+    Add or update a reagent label on an artifact and set the Index Sequence UDF
+
     Args:
         artifact_dom: Artifact DOM object
         artifact_uri: Artifact URI
-        reagent_label_name: Name of the reagent label
+        reagent_label_name: Name of the reagent label (also used to look up reagent type)
         sample_name: Sample name (for logging)
-    
+
     Returns:
         Boolean indicating success
     """
-    
+
     try:
+        # First, get the index sequence from the reagent type
+        print(f"  → Looking up reagent type: '{reagent_label_name}'")
+
+        encoded_name = quote(reagent_label_name)
+        reagent_type_search_uri = f"{BASE_URI}reagenttypes?name={encoded_name}"
+
+        try:
+            reagent_type_response = requests.get(
+                reagent_type_search_uri,
+                auth=(args.username, args.password),
+                headers={'Accept': 'application/xml'}
+            )
+
+            index_sequence = None
+            if reagent_type_response.status_code == 200:
+                rt_root = ET.fromstring(reagent_type_response.content)
+
+                # Find the reagent-type element
+                namespaces = {'rtp': 'http://genologics.com/ri/reagenttype'}
+                rt_elements = rt_root.findall('.//rtp:reagent-type', namespaces)
+                if not rt_elements:
+                    rt_elements = rt_root.findall('.//reagent-type')
+
+                for rt_elem in rt_elements:
+                    if rt_elem.get('name') == reagent_label_name:
+                        rt_uri = rt_elem.get('uri')
+
+                        # Get the full reagent type details
+                        rt_detail_response = requests.get(
+                            rt_uri,
+                            auth=(args.username, args.password),
+                            headers={'Accept': 'application/xml'}
+                        )
+
+                        if rt_detail_response.status_code == 200:
+                            rt_detail_root = ET.fromstring(rt_detail_response.content)
+
+                            # Find the special-type with name="Index"
+                            special_types = rt_detail_root.findall('.//{http://genologics.com/ri/reagenttype}special-type')
+                            if not special_types:
+                                special_types = rt_detail_root.findall('.//special-type')
+
+                            for st in special_types:
+                                if st.get('name') == 'Index':
+                                    # Find the Sequence attribute
+                                    attributes = st.findall('.//{http://genologics.com/ri/reagenttype}attribute')
+                                    if not attributes:
+                                        attributes = st.findall('.//attribute')
+
+                                    for attr in attributes:
+                                        if attr.get('name') == 'Sequence':
+                                            index_sequence = attr.get('value')
+                                            print(f"  → Found index sequence: {index_sequence}")
+                                            break
+                                    break
+                        break
+
+            if not index_sequence:
+                print(f"  ⚠ Warning: Could not find index sequence for '{reagent_label_name}'")
+
+        except Exception as e:
+            print(f"  ⚠ Warning: Error looking up reagent type sequence: {e}")
+            index_sequence = None
+
         # Get root artifact element
         artifact_element = artifact_dom.getElementsByTagName('art:artifact')[0]
-        
+
         # Check if reagent-label already exists
         reagent_labels = artifact_dom.getElementsByTagName('reagent-label')
         existing_label = None
-        
+
         for label in reagent_labels:
             if label.getAttribute('name') == reagent_label_name:
                 existing_label = label
                 break
-        
+
         if existing_label:
             print(f"  → Reagent label '{reagent_label_name}' already exists")
         else:
@@ -810,17 +1182,46 @@ def add_reagent_label_to_artifact(artifact_dom, artifact_uri, reagent_label_name
             new_label.setAttribute('name', reagent_label_name)
             artifact_element.appendChild(new_label)
             print(f"  → Added reagent label '{reagent_label_name}'")
-        
+
+        # Add or update Index Sequence UDF if we found the sequence
+        if index_sequence:
+            # Get or create the udf section
+            udf_nodes = artifact_dom.getElementsByTagName('udf:field')
+            existing_seq_field = None
+
+            for udf_node in udf_nodes:
+                if udf_node.getAttribute('name') == 'Index Sequence':
+                    existing_seq_field = udf_node
+                    break
+
+            if existing_seq_field:
+                # Update existing field
+                if existing_seq_field.firstChild:
+                    existing_seq_field.firstChild.data = index_sequence
+                else:
+                    text_node = artifact_dom.createTextNode(index_sequence)
+                    existing_seq_field.appendChild(text_node)
+                print(f"  → Updated 'Index Sequence' UDF: {index_sequence}")
+            else:
+                # Create new UDF field
+                new_seq_field = artifact_dom.createElement('udf:field')
+                new_seq_field.setAttribute('name', 'Index Sequence')
+                new_seq_field.setAttribute('type', 'String')
+                text_node = artifact_dom.createTextNode(index_sequence)
+                new_seq_field.appendChild(text_node)
+                artifact_element.appendChild(new_seq_field)
+                print(f"  → Created 'Index Sequence' UDF: {index_sequence}")
+
         # Save the updated artifact using requests
         updated_xml = artifact_dom.toxml().encode('utf-8')
-        
+
         response = requests.put(
             artifact_uri,
             data=updated_xml,
             headers={'Content-Type': 'application/xml'},
             auth=(args.username, args.password)
         )
-        
+
         if response.status_code in [200, 201]:
             print(f"  ✓ Successfully updated artifact")
             return True
@@ -828,7 +1229,7 @@ def add_reagent_label_to_artifact(artifact_dom, artifact_uri, reagent_label_name
             print(f"  ✗ ERROR: PUT failed with status {response.status_code}")
             print(f"    Response: {response.text[:200]}")
             return False
-            
+
     except Exception as e:
         print(f"  ✗ ERROR adding reagent label: {e}")
         import traceback
@@ -839,13 +1240,17 @@ def add_reagent_label_to_artifact(artifact_dom, artifact_uri, reagent_label_name
 def main():
     global args
     global clarity
+    global BASE_URI
     args = setupArguments()
-    
+
     if not (args.username and args.password and args.stepURI and args.fileLuid):
         print("Missing required arguments. Please provide username, password, stepURI, and fileLUID.")
         sys.exit(1)
 
     clarity.setup(username=args.username, password=args.password, sourceURI=args.stepURI)
+
+    # Cache the base URI to avoid repeated warnings from glsapiutil3
+    BASE_URI = str(clarity.getBaseURI())
 
     # Download the Magnis XML file
     print("="*60)
@@ -904,24 +1309,7 @@ def main():
     # Process reagent kits and lots
     reagent_info = process_reagent_kits(magnis_data.get('labware', []))
 
-    # Build reagent lot summary for step details
-    reagent_summary = []
-    for reagent in reagent_info:
-        status_msg = {
-            'lot_created': 'CREATED',
-            'lot_exists': 'EXISTS',
-            'kit_not_found': 'KIT NOT FOUND',
-            'lot_creation_failed': 'CREATION FAILED'
-        }.get(reagent['status'], 'UNKNOWN')
-
-        reagent_summary.append(
-            f"{reagent['clarity_name']}: Lot {reagent['lot_number']} "
-            f"(Exp: {reagent['expiry_date']}) [{status_msg}]"
-        )
-
-    reagent_summary_text = '\n'.join(reagent_summary) if reagent_summary else 'No reagent kits processed'
-
-    # Map to Clarity UDF fields
+    # Map to Clarity UDF fields (excluding reagent lots - they use a separate endpoint)
     field_mappings = {
         'Run Name': magnis_data.get('run_name', ''),
         'Protocol Name': magnis_data.get('protocol_name', ''),
@@ -933,19 +1321,31 @@ def main():
         'Input Amount (ng)': magnis_data.get('input_amount', ''),
         'Probe Design': magnis_data.get('probe_design', ''),
         'Index Strip': index_barcode,
-        'Reagent Lots': reagent_summary_text,
         'Audit Trail': magnis_data.get('logs', ''),
     }
-    
+
     # Update the step details
     print("\n" + "="*60)
     print("Updating Clarity step details...")
     print("="*60)
-    success = update_step_udfs(field_mappings, args.stepURI)
-    
+    success, failed_optional = update_step_udfs(
+        field_mappings,
+        args.stepURI
+    )
+
     if not success:
         print("\nERROR: Failed to update step details")
         sys.exit(1)
+
+    if failed_optional:
+        print(f"\n⚠ Note: {len(failed_optional)} optional field(s) were not updated: {', '.join(failed_optional)}")
+
+    # Associate reagent lots with the step using the dedicated endpoint
+    if reagent_info:
+        reagent_success = associate_reagent_lots_with_step(reagent_info, args.stepURI)
+        if not reagent_success:
+            print("\n⚠ WARNING: Failed to associate reagent lots with step")
+            print("  Continuing with sample processing...")
     
     # Only match samples if we have samples
     if samples_from_xml:
@@ -972,7 +1372,7 @@ def main():
         if reagent_info:
             print(f"\nReagent Lots:")
             for reagent in reagent_info:
-                status_icon = "✓" if reagent['status'] in ['lot_created', 'lot_exists'] else "⚠"
+                status_icon = "✓" if reagent['status'] in ['lot_created', 'lot_exists', 'lot_ready'] else "⚠"
                 print(f"  {status_icon} {reagent['clarity_name']}: Lot {reagent['lot_number']} (Exp: {reagent['expiry_date']}) [{reagent['status'].upper().replace('_', ' ')}]")
         
         if result['updated']:
@@ -1001,7 +1401,7 @@ def main():
         if reagent_info:
             print(f"\nReagent Lots:")
             for reagent in reagent_info:
-                status_icon = "✓" if reagent['status'] in ['lot_created', 'lot_exists'] else "⚠"
+                status_icon = "✓" if reagent['status'] in ['lot_created', 'lot_exists', 'lot_ready'] else "⚠"
                 print(f"  {status_icon} {reagent['clarity_name']}: Lot {reagent['lot_number']} (Exp: {reagent['expiry_date']}) [{reagent['status'].upper().replace('_', ' ')}]")
 
 

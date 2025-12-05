@@ -1085,31 +1085,95 @@ def match_samples_and_add_index_labels(magnis_samples, stepURI, index_strip_barc
 
 def add_reagent_label_to_artifact(artifact_dom, artifact_uri, reagent_label_name, sample_name):
     """
-    Add or update a reagent label on an artifact
-    
+    Add or update a reagent label on an artifact and set the Index Sequence UDF
+
     Args:
         artifact_dom: Artifact DOM object
         artifact_uri: Artifact URI
-        reagent_label_name: Name of the reagent label
+        reagent_label_name: Name of the reagent label (also used to look up reagent type)
         sample_name: Sample name (for logging)
-    
+
     Returns:
         Boolean indicating success
     """
-    
+
     try:
+        # First, get the index sequence from the reagent type
+        print(f"  → Looking up reagent type: '{reagent_label_name}'")
+
+        encoded_name = quote(reagent_label_name)
+        reagent_type_search_uri = f"{BASE_URI}reagenttypes?name={encoded_name}"
+
+        try:
+            reagent_type_response = requests.get(
+                reagent_type_search_uri,
+                auth=(args.username, args.password),
+                headers={'Accept': 'application/xml'}
+            )
+
+            index_sequence = None
+            if reagent_type_response.status_code == 200:
+                rt_root = ET.fromstring(reagent_type_response.content)
+
+                # Find the reagent-type element
+                namespaces = {'rtp': 'http://genologics.com/ri/reagenttype'}
+                rt_elements = rt_root.findall('.//rtp:reagent-type', namespaces)
+                if not rt_elements:
+                    rt_elements = rt_root.findall('.//reagent-type')
+
+                for rt_elem in rt_elements:
+                    if rt_elem.get('name') == reagent_label_name:
+                        rt_uri = rt_elem.get('uri')
+
+                        # Get the full reagent type details
+                        rt_detail_response = requests.get(
+                            rt_uri,
+                            auth=(args.username, args.password),
+                            headers={'Accept': 'application/xml'}
+                        )
+
+                        if rt_detail_response.status_code == 200:
+                            rt_detail_root = ET.fromstring(rt_detail_response.content)
+
+                            # Find the special-type with name="Index"
+                            special_types = rt_detail_root.findall('.//{http://genologics.com/ri/reagenttype}special-type')
+                            if not special_types:
+                                special_types = rt_detail_root.findall('.//special-type')
+
+                            for st in special_types:
+                                if st.get('name') == 'Index':
+                                    # Find the Sequence attribute
+                                    attributes = st.findall('.//{http://genologics.com/ri/reagenttype}attribute')
+                                    if not attributes:
+                                        attributes = st.findall('.//attribute')
+
+                                    for attr in attributes:
+                                        if attr.get('name') == 'Sequence':
+                                            index_sequence = attr.get('value')
+                                            print(f"  → Found index sequence: {index_sequence}")
+                                            break
+                                    break
+                        break
+
+            if not index_sequence:
+                print(f"  ⚠ Warning: Could not find index sequence for '{reagent_label_name}'")
+
+        except Exception as e:
+            print(f"  ⚠ Warning: Error looking up reagent type sequence: {e}")
+            index_sequence = None
+
         # Get root artifact element
         artifact_element = artifact_dom.getElementsByTagName('art:artifact')[0]
-        
+
         # Check if reagent-label already exists
         reagent_labels = artifact_dom.getElementsByTagName('reagent-label')
         existing_label = None
-        
+
         for label in reagent_labels:
             if label.getAttribute('name') == reagent_label_name:
                 existing_label = label
                 break
-        
+
         if existing_label:
             print(f"  → Reagent label '{reagent_label_name}' already exists")
         else:
@@ -1118,17 +1182,46 @@ def add_reagent_label_to_artifact(artifact_dom, artifact_uri, reagent_label_name
             new_label.setAttribute('name', reagent_label_name)
             artifact_element.appendChild(new_label)
             print(f"  → Added reagent label '{reagent_label_name}'")
-        
+
+        # Add or update Index Sequence UDF if we found the sequence
+        if index_sequence:
+            # Get or create the udf section
+            udf_nodes = artifact_dom.getElementsByTagName('udf:field')
+            existing_seq_field = None
+
+            for udf_node in udf_nodes:
+                if udf_node.getAttribute('name') == 'Index Sequence':
+                    existing_seq_field = udf_node
+                    break
+
+            if existing_seq_field:
+                # Update existing field
+                if existing_seq_field.firstChild:
+                    existing_seq_field.firstChild.data = index_sequence
+                else:
+                    text_node = artifact_dom.createTextNode(index_sequence)
+                    existing_seq_field.appendChild(text_node)
+                print(f"  → Updated 'Index Sequence' UDF: {index_sequence}")
+            else:
+                # Create new UDF field
+                new_seq_field = artifact_dom.createElement('udf:field')
+                new_seq_field.setAttribute('name', 'Index Sequence')
+                new_seq_field.setAttribute('type', 'String')
+                text_node = artifact_dom.createTextNode(index_sequence)
+                new_seq_field.appendChild(text_node)
+                artifact_element.appendChild(new_seq_field)
+                print(f"  → Created 'Index Sequence' UDF: {index_sequence}")
+
         # Save the updated artifact using requests
         updated_xml = artifact_dom.toxml().encode('utf-8')
-        
+
         response = requests.put(
             artifact_uri,
             data=updated_xml,
             headers={'Content-Type': 'application/xml'},
             auth=(args.username, args.password)
         )
-        
+
         if response.status_code in [200, 201]:
             print(f"  ✓ Successfully updated artifact")
             return True
@@ -1136,7 +1229,7 @@ def add_reagent_label_to_artifact(artifact_dom, artifact_uri, reagent_label_name
             print(f"  ✗ ERROR: PUT failed with status {response.status_code}")
             print(f"    Response: {response.text[:200]}")
             return False
-            
+
     except Exception as e:
         print(f"  ✗ ERROR adding reagent label: {e}")
         import traceback

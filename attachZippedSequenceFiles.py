@@ -641,6 +641,13 @@ def parse_arguments():
         help='Log file path (default: ./attach_sequence_files.log)'
     )
 
+    parser.add_argument(
+        '--send-emails',
+        action='store_true',
+        default=False,
+        help='Enable email notifications (default: disabled)'
+    )
+
     return parser.parse_args()
 
 

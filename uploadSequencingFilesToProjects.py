@@ -2,6 +2,7 @@
 import sys
 import os
 import io
+import re
 import logging
 import argparse
 import zipfile
@@ -334,9 +335,14 @@ def match_artifacts_to_files(api, artifacts, files_by_basename):
         matched_files = []
 
         # Try to find matching file group by base name
+        # Use token-based matching to avoid substring false positives
+        # (e.g., PCR23 should not match PCR230)
         for basename, file_list in files_by_basename.items():
-            # Check if artifact name appears in base name (case insensitive)
-            if artifact_name.upper() in basename.upper():
+            # Split basename into tokens using common delimiters
+            tokens = re.split(r'[_\-\s.]+', basename.upper())
+
+            # Check if artifact name matches any complete token
+            if artifact_name.upper() in tokens:
                 matched_basename = basename
                 matched_files = file_list
                 break
